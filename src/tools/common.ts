@@ -27,7 +27,8 @@ export const ensureConnectionParameters = connectionContainerSchema
 export const querySchema = z.record(z.string(), z.string()).optional();
 
 export const stringListSchema = z
-  .union([z.string(), z.array(z.string()), z.undefined()])
+  .union([z.string(), z.array(z.string())])
+  .optional()
   .transform((value) => {
     if (!value) {
       return undefined;
