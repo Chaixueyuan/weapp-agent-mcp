@@ -23,7 +23,8 @@ export interface WeappConnectionConfig {
 export class ConfigError extends Error {}
 
 const argsSchema = z
-  .union([z.string(), z.array(z.string()), z.undefined()])
+  .union([z.string(), z.array(z.string())])
+  .optional()
   .transform((value) => {
     if (!value) {
       return undefined;
@@ -31,8 +32,7 @@ const argsSchema = z
     const list = Array.isArray(value) ? value : value.split(/\s+/);
     const normalized = list.map((item) => item.trim()).filter(Boolean);
     return normalized.length ? normalized : undefined;
-  })
-  .optional();
+  });
 
 export const connectionOverridesSchema = z
   .object({
@@ -75,7 +75,7 @@ function mergeDefined<T extends Record<string, unknown>>(
 function fromPrevious(
   previous?: WeappConnectionConfig
 ): ConnectionOverrides {
-  const base: ConnectionOverrides = {};
+  const base: ConnectionOverrides = { args: undefined };
   if (!previous) {
     return base;
   }
