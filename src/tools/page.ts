@@ -61,6 +61,30 @@ const getElementsParameters = connectionContainerSchema.extend({
   withWxml: z.boolean().optional().default(false),
 });
 
+const expectRouteParameters = connectionContainerSchema.extend({
+  path: z.string().trim().min(1),
+});
+
+const expectVisibleParameters = connectionContainerSchema.extend({
+  selector: z.string().trim().min(1),
+});
+
+const expectElementTextParameters = connectionContainerSchema.extend({
+  selector: z.string().trim().min(1),
+  expected: z.string(),
+  mode: z.enum(["equals", "includes"]).optional().default("equals"),
+});
+
+const expectCountParameters = connectionContainerSchema.extend({
+  selector: z.string().trim().min(1),
+  expected: z.coerce.number().int().nonnegative(),
+});
+
+const expectDataParameters = connectionContainerSchema.extend({
+  path: z.string().trim().min(1),
+  expected: z.unknown(),
+});
+
 export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
   return [
     createGetElementTool(manager),
@@ -69,6 +93,11 @@ export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
     createWaitForElementGoneTool(manager),
     createWaitForRouteTool(manager),
     createWaitForTimeoutTool(manager),
+    createExpectRouteTool(manager),
+    createExpectVisibleTool(manager),
+    createExpectElementTextTool(manager),
+    createExpectCountTool(manager),
+    createExpectDataTool(manager),
     createGetPageDataTool(manager),
     createSetPageDataTool(manager),
     createCallPageMethodTool(manager),
@@ -396,6 +425,169 @@ function createWaitForTimeoutTool(manager: WeappAutomatorManager): AnyTool {
           return toTextResult(`已等待 ${args.milliseconds}ms。`);
         }
       );
+      }),
+  };
+}
+
+function createExpectRouteTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_expectRoute",
+    description: "断言当前页面路径是否等于预期值。",
+    parameters: expectRouteParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = expectRouteParameters.parse(rawArgs ?? {});
+        return manager.withMiniProgram<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (miniProgram) => {
+            const page = await miniProgram.currentPage();
+            const actual = page?.path ?? null;
+            const pass = actual === args.path;
+            return toTextResult(formatJson({
+              pass,
+              expected: args.path,
+              actual,
+              snapshot: {
+                path: actual,
+                query: toSerializableValue(page?.query ?? null),
+              },
+            }));
+          }
+        );
+      }),
+  };
+}
+
+function createExpectVisibleTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_expectVisible",
+    description: "断言页面上是否存在可定位到的元素。支持 [index=N] 语法。",
+    parameters: expectVisibleParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = expectVisibleParameters.parse(rawArgs ?? {});
+        return manager.withPage<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (page) => {
+            let selector = args.selector;
+            let indexHint: number | undefined;
+            const parsed = parseSelectorWithIndex(selector);
+            if (parsed) {
+              selector = parsed.baseSelector;
+              indexHint = parsed.index;
+            }
+            const elements = typeof page.$$ === "function" ? await page.$$(selector) : [];
+            const count = Array.isArray(elements) ? elements.length : 0;
+            const pass = indexHint !== undefined ? indexHint >= 0 && indexHint < count : count > 0;
+            return toTextResult(formatJson({
+              pass,
+              expected: true,
+              actual: pass,
+              snapshot: {
+                selector: args.selector,
+                count,
+                index: indexHint ?? null,
+              },
+            }));
+          }
+        );
+      }),
+  };
+}
+
+function createExpectElementTextTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_expectElementText",
+    description: "断言元素文本是否等于或包含预期值。支持 [index=N] 语法。",
+    parameters: expectElementTextParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = expectElementTextParameters.parse(rawArgs ?? {});
+        return manager.withPage<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (page) => {
+            const element = await resolveElement(page, args.selector);
+            const actual = typeof element?.text === "function" ? await element.text().catch(() => null) : null;
+            const normalized = typeof actual === "string" ? actual : String(actual ?? "");
+            const pass = args.mode === "includes"
+              ? normalized.includes(args.expected)
+              : normalized === args.expected;
+            return toTextResult(formatJson({
+              pass,
+              expected: args.expected,
+              actual: normalized,
+              snapshot: {
+                selector: args.selector,
+                mode: args.mode,
+              },
+            }));
+          }
+        );
+      }),
+  };
+}
+
+function createExpectCountTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_expectCount",
+    description: "断言页面上匹配选择器的元素数量是否等于预期值。",
+    parameters: expectCountParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = expectCountParameters.parse(rawArgs ?? {});
+        return manager.withPage<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (page) => {
+            if (typeof page.$$ !== "function") {
+              throw new UserError("当前页面不支持查询元素数组。");
+            }
+            const elements = await page.$$(args.selector);
+            const actual = Array.isArray(elements) ? elements.length : 0;
+            return toTextResult(formatJson({
+              pass: actual === args.expected,
+              expected: args.expected,
+              actual,
+              snapshot: {
+                selector: args.selector,
+              },
+            }));
+          }
+        );
+      }),
+  };
+}
+
+function createExpectDataTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_expectData",
+    description: "断言当前页面指定 data 路径的值是否与预期相等。",
+    parameters: expectDataParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = expectDataParameters.parse(rawArgs ?? {});
+        return manager.withPage<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (page) => {
+            const actual = await manager.withRequestTimeout(
+              () => page.data(args.path),
+              { description: `读取页面数据 (${args.path})` }
+            );
+            const pass = JSON.stringify(toSerializableValue(actual)) === JSON.stringify(toSerializableValue(args.expected));
+            return toTextResult(formatJson({
+              pass,
+              expected: toSerializableValue(args.expected),
+              actual: toSerializableValue(actual),
+              snapshot: {
+                path: args.path,
+              },
+            }));
+          }
+        );
       }),
   };
 }
