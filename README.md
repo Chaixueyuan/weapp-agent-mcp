@@ -2,6 +2,20 @@
 
 基于 FastMCP 的服务器，通过 [`miniprogram-automator`](https://www.npmjs.com/package/miniprogram-automator) 自动化微信开发者工具。该服务器提供 MCP 工具，让 AI 助手能够导航、检查和操作小程序页面——类似于 `playwright-mcp`，但专为微信生态系统定制。
 
+## 文档导航
+
+如果你是新接手这个 fork 的维护者或 agent，建议先按下面顺序看文档：
+
+1. `docs/README.md`
+2. `docs/weapp-dev-agent-guide.md`
+3. `docs/agent-handoff.md`
+4. `docs/roadmap/agent-first-capability-matrix.md`
+5. `docs/specs/`
+6. `docs/official/wechat-devtools-automator/README.md`
+7. `CHANGELOG.md`
+
+这样可以先理解“怎么用”，再理解“当前要补什么”，最后再对照官方底层能力与历史改动。
+
 ## 前置要求
 
 - 已安装微信开发者工具，支持命令行访问（`cli` / `cli.bat`）

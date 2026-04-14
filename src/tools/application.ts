@@ -328,7 +328,7 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
     execute: async (rawArgs) =>
       withUserErrorResult(async () => {
       const args = getConsoleLogsParameters.parse(rawArgs ?? {});
-      const allLogs = manager.getConsoleLogs();
+      const allLogs = await manager.getConsoleLogs();
       const sinceTimestamp =
         typeof args.since === "number" ? Date.now() - args.since : undefined;
 
@@ -354,7 +354,7 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
       }
 
       if (args.clear) {
-        manager.clearConsoleLogs();
+        await manager.clearConsoleLogs();
       }
 
       return toTextResult(

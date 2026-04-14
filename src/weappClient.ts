@@ -32,6 +32,12 @@ export interface ConsoleLogEntry {
   data?: SerializableValue;
 }
 
+interface PersistedState {
+  lastProjectPath: string | null;
+  pendingProjects: { path: string; name: string }[];
+  consoleLogs: ConsoleLogEntry[];
+}
+
 export class WeappAutomatorManager {
   private miniProgram?: MiniProgramInstance;
   private config?: WeappConnectionConfig;
@@ -60,15 +66,12 @@ export class WeappAutomatorManager {
    * 保存待选择项目到配置文件（持久化，支持跨进程）
    */
   private async savePendingProjects(projects: { path: string; name: string }[]): Promise<void> {
-    const configDir = path.dirname(WeappAutomatorManager.CONFIG_FILE);
-    await fs.promises.mkdir(configDir, { recursive: true });
-    const tmpPath = WeappAutomatorManager.CONFIG_FILE + ".tmp";
-    const content = JSON.stringify({ 
-      lastProjectPath: this.config?.projectPath || null,
-      pendingProjects: projects 
-    }, null, 2);
-    await fs.promises.writeFile(tmpPath, content, "utf-8");
-    await fs.promises.rename(tmpPath, WeappAutomatorManager.CONFIG_FILE);
+    const state = await this.readPersistedState();
+    state.pendingProjects = projects;
+    if (this.config?.projectPath) {
+      state.lastProjectPath = this.config.projectPath;
+    }
+    await this.writePersistedState(state);
   }
 
   /**
@@ -76,13 +79,8 @@ export class WeappAutomatorManager {
    */
   private async loadPendingProjects(): Promise<{ path: string; name: string }[]> {
     try {
-      const exists = await fs.promises.access(WeappAutomatorManager.CONFIG_FILE).then(() => true).catch(() => false);
-      if (!exists) {
-        return [];
-      }
-      const content = await fs.promises.readFile(WeappAutomatorManager.CONFIG_FILE, "utf-8");
-      const config = JSON.parse(content);
-      return config.pendingProjects || [];
+      const state = await this.readPersistedState();
+      return state.pendingProjects;
     } catch (error) {
       console.warn("[config] Failed to load pending projects:", error);
       return [];
@@ -146,12 +144,17 @@ export class WeappAutomatorManager {
     return `可用选项：\n${options}\n\n请输入编号（1-${this.pendingProjects.length}）或完整路径`;
   }
 
-  getConsoleLogs(): ConsoleLogEntry[] {
+  async getConsoleLogs(): Promise<ConsoleLogEntry[]> {
+    const state = await this.readPersistedState();
+    this.consoleLogs = state.consoleLogs;
     return [...this.consoleLogs];
   }
 
-  clearConsoleLogs(): void {
+  async clearConsoleLogs(): Promise<void> {
     this.consoleLogs = [];
+    const state = await this.readPersistedState();
+    state.consoleLogs = [];
+    await this.writePersistedState(state);
   }
 
   private appendConsoleLog(entry: ConsoleLogEntry): void {
@@ -170,6 +173,8 @@ export class WeappAutomatorManager {
     if (this.consoleLogs.length > this.maxLogs) {
       this.consoleLogs.shift();
     }
+
+    void this.persistConsoleLogs();
   }
 
   /**
@@ -177,28 +182,64 @@ export class WeappAutomatorManager {
    */
   private async saveProjectPath(projectPath: string): Promise<void> {
     try {
-      const configDir = path.dirname(WeappAutomatorManager.CONFIG_FILE);
-      await fs.promises.mkdir(configDir, { recursive: true });
-      const tmpPath = WeappAutomatorManager.CONFIG_FILE + ".tmp";
-      await fs.promises.writeFile(tmpPath, JSON.stringify({ lastProjectPath: projectPath }, null, 2), "utf-8");
-      await fs.promises.rename(tmpPath, WeappAutomatorManager.CONFIG_FILE);
+      const state = await this.readPersistedState();
+      state.lastProjectPath = projectPath;
+      await this.writePersistedState(state);
     } catch (error) {
       console.warn("[config] Failed to save project path:", error);
     }
   }
-  
+
   private async loadProjectPath(): Promise<string | null> {
     try {
-      const exists = await fs.promises.access(WeappAutomatorManager.CONFIG_FILE).then(() => true).catch(() => false);
-      if (!exists) {
-        return null;
-      }
-      const content = await fs.promises.readFile(WeappAutomatorManager.CONFIG_FILE, "utf-8");
-      const config = JSON.parse(content);
-      return config.lastProjectPath || null;
+      const state = await this.readPersistedState();
+      return state.lastProjectPath;
     } catch (error) {
       console.warn("[config] Failed to load project path:", error);
       return null;
+    }
+  }
+
+  private createDefaultState(): PersistedState {
+    return {
+      lastProjectPath: this.config?.projectPath || null,
+      pendingProjects: [],
+      consoleLogs: [],
+    };
+  }
+
+  private async readPersistedState(): Promise<PersistedState> {
+    try {
+      const content = await fs.promises.readFile(WeappAutomatorManager.CONFIG_FILE, "utf-8");
+      const parsed = JSON.parse(content) as Partial<PersistedState>;
+      return {
+        lastProjectPath: typeof parsed.lastProjectPath === "string" ? parsed.lastProjectPath : null,
+        pendingProjects: Array.isArray(parsed.pendingProjects) ? parsed.pendingProjects : [],
+        consoleLogs: Array.isArray(parsed.consoleLogs) ? parsed.consoleLogs as ConsoleLogEntry[] : [],
+      };
+    } catch {
+      return this.createDefaultState();
+    }
+  }
+
+  private async writePersistedState(state: PersistedState): Promise<void> {
+    const configDir = path.dirname(WeappAutomatorManager.CONFIG_FILE);
+    await fs.promises.mkdir(configDir, { recursive: true });
+    const tmpPath = WeappAutomatorManager.CONFIG_FILE + ".tmp";
+    await fs.promises.writeFile(tmpPath, JSON.stringify(state, null, 2), "utf-8");
+    await fs.promises.rename(tmpPath, WeappAutomatorManager.CONFIG_FILE);
+  }
+
+  private async persistConsoleLogs(): Promise<void> {
+    try {
+      const state = await this.readPersistedState();
+      state.consoleLogs = [...this.consoleLogs];
+      if (this.config?.projectPath) {
+        state.lastProjectPath = this.config.projectPath;
+      }
+      await this.writePersistedState(state);
+    } catch (error) {
+      console.warn("[config] Failed to persist console logs:", error);
     }
   }
 

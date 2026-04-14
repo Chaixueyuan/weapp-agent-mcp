@@ -162,7 +162,29 @@
 
 ---
 
-### 7. 增加 agent 使用手册
+### 7. 修复 `mp_getLogs` 跨进程丢日志问题
+
+说明：
+- 排查确认 `mp_getLogs` 之前只读取 `WeappAutomatorManager` 进程内内存中的 `consoleLogs`
+- 在使用 `inspector --cli node dist/index.js` 或其他按次启动 MCP 进程的场景下，日志监听虽然触发，但下一次调用读取日志时进程已变化，导致历史日志丢失
+- 已改为将 `consoleLogs` 与项目选择状态一起持久化到配置文件，再由 `mp_getLogs` 读取
+
+关键文件：
+- `src/weappClient.ts`
+- `src/tools/application.ts`
+
+验证结果：
+- 现在可稳定读到真实页面日志，例如：`[mcp-test] detail:backHome`
+- 该修复对“本地构建产物接入 Claude Code”与“使用 inspector/脚本逐次调用工具”两类场景都更稳
+
+意义：
+- 避免把“日志为空”误判为“小程序未输出日志”
+- 解决 tool 逐次启动或重连后日志状态丢失的问题
+- 让 `mp_getLogs` 真正适合作为调试与交接链路的一部分
+
+---
+
+### 8. 增加 agent 使用手册
 
 相关文档：
 - `docs/weapp-dev-agent-guide.md`
@@ -221,6 +243,31 @@
 
 ---
 
+## 配套测试项目与验证记录
+
+补充说明：
+- 当前已在本机小程序项目 ` /Users/liting/Desktop/微信小程序动效` 中补了一套专门给 `weapp-dev` MCP 使用的测试页面与交互
+- 该测试项目不是本仓库的一部分，但可作为当前 fork 的本机回归验证样本
+
+已验证能力：
+- 首页元素读取
+- 页面导航：`index -> lab -> detail`
+- 元素点击与输入
+- `page_getData` / `page_setData`
+- `page_waitRoute`
+- 截图
+- `mp_getLogs`
+- 基础滚动与列表场景
+
+截图产物：
+- `weapp-lab-detail.png`
+- `weapp-lab-advanced.png`
+
+建议：
+- 若后续继续维护此 fork，可保留一个类似的本机测试小程序，专门覆盖导航、输入、列表、滚动、日志、截图等基础链路
+
+---
+
 ## 当前建议的交接阅读顺序
 
 新接手维护者建议按这个顺序看：
@@ -254,6 +301,7 @@
 - 更稳的日志恢复与过滤
 - 页面等待增强
 - 真实手势交互增强
+- 控制台日志跨进程持久化
 - 本地官方文档索引
 - 仓库内 agent 使用手册
 

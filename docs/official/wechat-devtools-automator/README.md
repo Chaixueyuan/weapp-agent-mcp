@@ -24,6 +24,17 @@
 
 ## 快速导航
 
+如果你是 agent，建议按问题进入：
+
+- 想看连接 / 启动：直接看 `automator.txt`
+- 想看小程序全局能力：直接看 `miniprogram.txt`
+- 想看页面选择器、`waitFor`、`data`：直接看 `page.txt`
+- 想看元素交互、滚动、滑动、组件方法：直接看 `element.txt`
+- 想看真机自动化：直接看 `remote.txt`
+- 想看官方测试示例：直接看 `example.txt`
+- 想确认官方边界和限制：直接看 `faq.txt`
+
+
 ### 1. Automator
 
 对应文件：`docs/official/wechat-devtools-automator/automator.txt`
