@@ -30,3 +30,6 @@ Thumbs.db
 # Claude Code local settings
 .claude/
 
+# Local validation artifacts
+tmp/
+
