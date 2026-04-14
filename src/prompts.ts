@@ -14,10 +14,11 @@ const connectionFlow = [
   "Use this MCP with a stable workflow.",
   "",
   "1. Call mp_ensureConnection first.",
-  "2. If it succeeds, call mp_currentPage to confirm the active page.",
-  "3. Only then call mp_screenshot, page_*, or element_* tools.",
-  "4. If a tool says PROJECT_SELECTION_REQUIRED, call mp_listProjects or provide projectSelection to mp_ensureConnection.",
-  "5. If a tool says NO_ACTIVE_SESSION, call mp_ensureConnection again instead of blindly retrying other tools.",
+  "2. Call mp_healthCheck to confirm the session, route, and log listener status.",
+  "3. If healthCheck is healthy, call mp_currentPage to confirm the active page.",
+  "4. Only then call mp_screenshot, page_*, or element_* tools.",
+  "5. If healthCheck says recovery is needed, call mp_recoverConnection instead of blindly retrying other tools.",
+  "6. If a tool says PROJECT_SELECTION_REQUIRED, call mp_listProjects or provide projectSelection to mp_ensureConnection.",
 ].join("\n");
 
 export function createPrompts(): WeappPrompt[] {
@@ -69,10 +70,11 @@ export function createPrompts(): WeappPrompt[] {
           errorLine,
           "",
           "Recovery order:",
-          "- First call mp_ensureConnection with reconnect=true.",
+          "- First call mp_healthCheck.",
+          "- If recovery is needed, call mp_recoverConnection.",
           "- If the MCP asks for project selection, call mp_listProjects or retry mp_ensureConnection with projectSelection.",
           "- If the MCP reports connect mode failure, check whether WeChat DevTools automation is reachable at the configured wsEndpoint.",
-          "- Do not spam mp_ensureConnection more than twice with the same arguments.",
+          "- Do not spam the same recovery call more than twice with the same arguments.",
         ].join("\n");
       },
     },

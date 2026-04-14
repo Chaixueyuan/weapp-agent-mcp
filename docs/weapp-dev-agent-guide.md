@@ -21,9 +21,10 @@
 
 推荐固定顺序：
 1. 先调用 `mp_ensureConnection`
-2. 再调用 `mp_currentPage`
-3. 需要观察界面时调用 `mp_screenshot`
-4. 之后再调用 `page_*` 或 `element_*`
+2. 再调用 `mp_healthCheck`
+3. 若状态健康，再调用 `mp_currentPage`
+4. 需要观察界面时调用 `mp_screenshot`
+5. 之后再调用 `page_*` 或 `element_*`
 
 不要一上来直接操作页面元素。
 
@@ -52,9 +53,10 @@
 ### 4. 连接失败时不要盲重试
 
 推荐恢复顺序：
-1. 先重新调用 `mp_ensureConnection`
-2. 若有明确重连需要，再使用 `reconnect=true`
-3. 如果提示项目选择问题，调用 `mp_listProjects` 或在 `mp_ensureConnection` 中传 `projectSelection`
+1. 先调用 `mp_healthCheck`
+2. 若 `needsRecovery=true`，优先调用 `mp_recoverConnection`
+3. 若仍有明确重连需要，再使用 `mp_ensureConnection(reconnect=true)`
+4. 如果提示项目选择问题，调用 `mp_listProjects` 或在 `mp_ensureConnection` 中传 `projectSelection`
 
 不要在相同参数下无脑重复调用很多次。
 

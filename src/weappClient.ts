@@ -32,10 +32,38 @@ export interface ConsoleLogEntry {
   data?: SerializableValue;
 }
 
+export interface LogStatusSnapshot {
+  listenerAttached: boolean;
+  lastLogAt: number | null;
+  lastListenerBindAt: number | null;
+  logStoreMode: "persisted";
+  sessionId: string | null;
+  sourceProjectPath: string | null;
+  logCount: number;
+  recentTypes: string[];
+}
+
+export interface ConnectionSnapshot {
+  devtoolsOnline: boolean;
+  wsReachable: boolean;
+  automatorConnected: boolean;
+  connectionMode: string | null;
+  projectPath: string | null;
+  wsEndpoint: string | null;
+  port: number | null;
+  sessionId: string | null;
+}
+
 interface PersistedState {
   lastProjectPath: string | null;
   pendingProjects: { path: string; name: string }[];
   consoleLogs: ConsoleLogEntry[];
+  sessionId: string | null;
+  listenerAttached: boolean;
+  lastLogAt: number | null;
+  lastListenerBindAt: number | null;
+  logStoreMode: "persisted";
+  sourceProjectPath: string | null;
 }
 
 export class WeappAutomatorManager {
@@ -45,6 +73,10 @@ export class WeappAutomatorManager {
   private maxLogs = 1000; // 最多保存1000条日志
   private pendingProjects: { path: string; name: string }[] = [];
   private loggingAttachedProgram?: MiniProgramInstance;
+  private sessionId: string | null = null;
+  private listenerAttached = false;
+  private lastLogAt: number | null = null;
+  private lastListenerBindAt: number | null = null;
   
   private static readonly CONFIG_FILE = path.join(
     process.env.USERPROFILE || process.env.HOME || os.tmpdir(),
@@ -147,13 +179,34 @@ export class WeappAutomatorManager {
   async getConsoleLogs(): Promise<ConsoleLogEntry[]> {
     const state = await this.readPersistedState();
     this.consoleLogs = state.consoleLogs;
+    this.sessionId = state.sessionId;
+    this.listenerAttached = state.listenerAttached;
+    this.lastLogAt = state.lastLogAt;
+    this.lastListenerBindAt = state.lastListenerBindAt;
     return [...this.consoleLogs];
+  }
+
+  async getLogStatus(): Promise<LogStatusSnapshot> {
+    const state = await this.readPersistedState();
+    const logs = Array.isArray(state.consoleLogs) ? state.consoleLogs : [];
+    const recentTypes = [...new Set(logs.slice(-20).map((log) => log.type))];
+    return {
+      listenerAttached: state.listenerAttached,
+      lastLogAt: state.lastLogAt,
+      lastListenerBindAt: state.lastListenerBindAt,
+      logStoreMode: "persisted",
+      sessionId: state.sessionId,
+      sourceProjectPath: state.sourceProjectPath,
+      logCount: logs.length,
+      recentTypes,
+    };
   }
 
   async clearConsoleLogs(): Promise<void> {
     this.consoleLogs = [];
     const state = await this.readPersistedState();
     state.consoleLogs = [];
+    state.lastLogAt = null;
     await this.writePersistedState(state);
   }
 
@@ -173,6 +226,8 @@ export class WeappAutomatorManager {
     if (this.consoleLogs.length > this.maxLogs) {
       this.consoleLogs.shift();
     }
+
+    this.lastLogAt = entry.timestamp;
 
     void this.persistConsoleLogs();
   }
@@ -205,6 +260,12 @@ export class WeappAutomatorManager {
       lastProjectPath: this.config?.projectPath || null,
       pendingProjects: [],
       consoleLogs: [],
+      sessionId: this.sessionId,
+      listenerAttached: this.listenerAttached,
+      lastLogAt: this.lastLogAt,
+      lastListenerBindAt: this.lastListenerBindAt,
+      logStoreMode: "persisted",
+      sourceProjectPath: this.config?.projectPath || null,
     };
   }
 
@@ -216,6 +277,12 @@ export class WeappAutomatorManager {
         lastProjectPath: typeof parsed.lastProjectPath === "string" ? parsed.lastProjectPath : null,
         pendingProjects: Array.isArray(parsed.pendingProjects) ? parsed.pendingProjects : [],
         consoleLogs: Array.isArray(parsed.consoleLogs) ? parsed.consoleLogs as ConsoleLogEntry[] : [],
+        sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : null,
+        listenerAttached: typeof parsed.listenerAttached === "boolean" ? parsed.listenerAttached : false,
+        lastLogAt: typeof parsed.lastLogAt === "number" ? parsed.lastLogAt : null,
+        lastListenerBindAt: typeof parsed.lastListenerBindAt === "number" ? parsed.lastListenerBindAt : null,
+        logStoreMode: "persisted",
+        sourceProjectPath: typeof parsed.sourceProjectPath === "string" ? parsed.sourceProjectPath : null,
       };
     } catch {
       return this.createDefaultState();
@@ -234,12 +301,36 @@ export class WeappAutomatorManager {
     try {
       const state = await this.readPersistedState();
       state.consoleLogs = [...this.consoleLogs];
+      state.sessionId = this.sessionId ?? state.sessionId;
+      state.listenerAttached = this.listenerAttached;
+      state.lastLogAt = this.lastLogAt ?? state.lastLogAt;
+      state.lastListenerBindAt = this.lastListenerBindAt ?? state.lastListenerBindAt;
+      state.logStoreMode = "persisted";
+      state.sourceProjectPath = this.config?.projectPath || state.sourceProjectPath || null;
       if (this.config?.projectPath) {
         state.lastProjectPath = this.config.projectPath;
       }
       await this.writePersistedState(state);
     } catch (error) {
       console.warn("[config] Failed to persist console logs:", error);
+    }
+  }
+
+  private async persistStateMeta(): Promise<void> {
+    try {
+      const state = await this.readPersistedState();
+      state.sessionId = this.sessionId ?? state.sessionId;
+      state.listenerAttached = this.listenerAttached;
+      state.lastLogAt = this.lastLogAt ?? state.lastLogAt;
+      state.lastListenerBindAt = this.lastListenerBindAt ?? state.lastListenerBindAt;
+      state.logStoreMode = "persisted";
+      state.sourceProjectPath = this.config?.projectPath || state.sourceProjectPath || null;
+      if (this.config?.projectPath) {
+        state.lastProjectPath = this.config.projectPath;
+      }
+      await this.writePersistedState(state);
+    } catch (error) {
+      console.warn("[config] Failed to persist state meta:", error);
     }
   }
 
@@ -456,6 +547,8 @@ export class WeappAutomatorManager {
     } finally {
       this.miniProgram.removeAllListeners();
       this.loggingAttachedProgram = undefined;
+      this.listenerAttached = false;
+      void this.persistStateMeta();
       this.miniProgram = undefined;
       this.config = undefined;
     }
@@ -1027,12 +1120,85 @@ C. 直接输入项目路径`;
     log.info(`DevTools launched with PID: ${proc.pid}`);
   }
 
+  async getConnectionSnapshot(): Promise<ConnectionSnapshot> {
+    const persisted = await this.readPersistedState();
+    const config = this.config;
+    const projectPath = config?.projectPath || persisted.lastProjectPath || null;
+    const wsEndpoint = config?.wsEndpoint || null;
+    const port = config ? this.getConfiguredPort(config) : null;
+    const automatorConnected = await this.isConnectionAlive();
+    const portReachable = port ? await this.isPortInUse(port) : false;
+    const devtoolsOnline = automatorConnected || portReachable;
+
+    return {
+      devtoolsOnline,
+      wsReachable: automatorConnected || portReachable,
+      automatorConnected,
+      connectionMode: config?.mode || null,
+      projectPath,
+      wsEndpoint,
+      port,
+      sessionId: this.sessionId || persisted.sessionId || null,
+    };
+  }
+
+  async recoverConnection(log: ToolLogger, options?: UseOptions): Promise<{
+    actions: string[];
+    before: ConnectionSnapshot & { listenerAttached: boolean; lastLogAt: number | null };
+    after: ConnectionSnapshot & { listenerAttached: boolean; lastLogAt: number | null };
+  }> {
+    const beforeConnection = await this.getConnectionSnapshot();
+    const beforeLog = await this.getLogStatus();
+    const actions: string[] = [];
+
+    await this.withMiniProgram(
+      log,
+      {
+        overrides: options?.overrides,
+        reconnect: options?.reconnect ?? true,
+      },
+      async () => {
+        actions.push("reconnected automator");
+        return null;
+      }
+    );
+
+    const afterConnection = await this.getConnectionSnapshot();
+    const afterLog = await this.getLogStatus();
+
+    if (!beforeLog.listenerAttached && afterLog.listenerAttached) {
+      actions.push("rebound console listener");
+    }
+    if (!beforeConnection.projectPath && afterConnection.projectPath) {
+      actions.push("reused persisted project path");
+    }
+
+    return {
+      actions,
+      before: {
+        ...beforeConnection,
+        listenerAttached: beforeLog.listenerAttached,
+        lastLogAt: beforeLog.lastLogAt,
+      },
+      after: {
+        ...afterConnection,
+        listenerAttached: afterLog.listenerAttached,
+        lastLogAt: afterLog.lastLogAt,
+      },
+    };
+  }
+
   private attachLogging(miniProgram: MiniProgramInstance, log: ToolLogger) {
     if (this.loggingAttachedProgram === miniProgram) {
+      this.listenerAttached = true;
       return;
     }
 
     this.loggingAttachedProgram = miniProgram;
+    this.listenerAttached = true;
+    this.lastListenerBindAt = Date.now();
+    this.sessionId = this.createSessionId();
+    void this.persistStateMeta();
 
     miniProgram.on("console", (event: unknown) => {
       const serialized = toSerializable(event);
@@ -1043,7 +1209,7 @@ C. 直接输入项目路径`;
         timestamp: Date.now(),
         data: serialized,
       };
-      
+
       this.appendConsoleLog(logEntry);
 
       log.debug("Mini Program console event", {
@@ -1058,13 +1224,17 @@ C. 直接输入项目路径`;
         timestamp: Date.now(),
         data: serialized,
       };
-      
+
       this.appendConsoleLog(logEntry);
 
       log.error("Mini Program exception", {
         event: serialized,
       });
     });
+  }
+
+  private createSessionId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 }
 

@@ -63,6 +63,15 @@ const currentPageParameters = connectionContainerSchema.extend({
   withData: z.coerce.boolean().optional().default(false),
 });
 
+const healthCheckParameters = connectionContainerSchema.extend({
+  includePage: z.coerce.boolean().optional().default(true),
+  includeLogs: z.coerce.boolean().optional().default(true),
+});
+
+const recoverConnectionParameters = connectionContainerSchema.extend({
+  reconnect: z.coerce.boolean().optional().default(true),
+});
+
 const listProjectsParameters = z.object({});
 
 const setDefaultProjectParameters = z.object({
@@ -74,6 +83,8 @@ export function createApplicationTools(
 ): AnyTool[] {
   return [
     createEnsureConnectionTool(manager),
+    createHealthCheckTool(manager),
+    createRecoverConnectionTool(manager),
     createNavigateTool(manager),
     createScreenshotTool(manager),
     createCallWxMethodTool(manager),
@@ -140,6 +151,104 @@ function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
       );
 
       return result;
+      }),
+    timeoutMs: 60000,
+  };
+}
+
+function createHealthCheckTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_healthCheck",
+    description: "聚合返回当前小程序自动化环境的健康状态，包括连接、页面、项目和日志监听状态。建议在调试前先调用。",
+    parameters: healthCheckParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = healthCheckParameters.parse(rawArgs ?? {});
+        return manager.withMiniProgram<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (miniProgram, config) => {
+            const connection = await manager.getConnectionSnapshot();
+            const logStatus = args.includeLogs ? await manager.getLogStatus() : null;
+            const page = args.includePage ? await miniProgram.currentPage().catch(() => null) : null;
+            const currentRoute = page?.path ?? null;
+            const automatorConnected = connection.automatorConnected;
+            const listenerAttached = logStatus?.listenerAttached ?? false;
+            const ok = Boolean(connection.devtoolsOnline && connection.wsReachable && automatorConnected);
+            const needsRecovery = !ok || (args.includeLogs && !listenerAttached);
+            const summary = !ok
+              ? "disconnected"
+              : needsRecovery
+                ? "degraded"
+                : "connected";
+
+            return toTextResult(
+              formatJson({
+                ok,
+                summary,
+                needsRecovery,
+                devtoolsOnline: connection.devtoolsOnline,
+                wsReachable: connection.wsReachable,
+                automatorConnected,
+                connectionMode: connection.connectionMode,
+                projectPath: connection.projectPath,
+                wsEndpoint: connection.wsEndpoint,
+                port: connection.port,
+                currentRoute,
+                listenerAttached: logStatus?.listenerAttached ?? null,
+                lastLogAt: logStatus?.lastLogAt ?? null,
+                logStoreMode: logStatus?.logStoreMode ?? null,
+                sessionId: logStatus?.sessionId ?? connection.sessionId,
+                sourceProjectPath: logStatus?.sourceProjectPath ?? null,
+                checkedAt: Date.now(),
+                warnings: [
+                  ...(args.includeLogs && !listenerAttached ? ["listener not attached"] : []),
+                  ...(args.includePage && !currentRoute ? ["current route unavailable"] : []),
+                ],
+                errors: [
+                  ...(!connection.devtoolsOnline ? ["devtools offline"] : []),
+                  ...(!automatorConnected ? ["automator session missing"] : []),
+                ],
+              })
+            );
+          }
+        );
+      }),
+    timeoutMs: 15000,
+  };
+}
+
+function createRecoverConnectionTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_recoverConnection",
+    description: "按标准顺序恢复 automator 会话、日志监听和项目上下文，并返回恢复前后状态。",
+    parameters: recoverConnectionParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = recoverConnectionParameters.parse(rawArgs ?? {});
+        const recovery = await manager.recoverConnection(context.log, {
+          overrides: args.connection,
+          reconnect: args.reconnect,
+        });
+        const afterLog = await manager.getLogStatus();
+        const recovered = recovery.after.automatorConnected && afterLog.listenerAttached;
+
+        return toTextResult(
+          formatJson({
+            ok: recovered,
+            recovered,
+            actions: recovery.actions,
+            before: recovery.before,
+            after: recovery.after,
+            health: {
+              ok: recovered,
+              summary: recovered ? "connected" : "degraded",
+              needsRecovery: !recovered,
+            },
+            warnings: afterLog.listenerAttached ? [] : ["listener not attached after recovery"],
+            errors: recovered ? [] : ["connection recovery incomplete"],
+          })
+        );
       }),
     timeoutMs: 60000,
   };
@@ -357,10 +466,19 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
         await manager.clearConsoleLogs();
       }
 
+      const logStatus = await manager.getLogStatus();
+
       return toTextResult(
         formatJson({
           count: logs.length,
           totalCount: allLogs.length,
+          listenerAttached: logStatus.listenerAttached,
+          lastLogAt: logStatus.lastLogAt,
+          lastListenerBindAt: logStatus.lastListenerBindAt,
+          logStoreMode: logStatus.logStoreMode,
+          sessionId: logStatus.sessionId,
+          sourceProjectPath: logStatus.sourceProjectPath,
+          recentTypes: logStatus.recentTypes,
           filters: {
             type: args.type ?? null,
             contains: args.contains ?? null,

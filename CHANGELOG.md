@@ -12,6 +12,8 @@
 - 日志恢复与过滤
 - 页面等待能力
 - 真实触摸/滑动交互
+- 连接健康检查与标准恢复能力
+- 日志状态可观测性增强
 - 本地化官方文档与 agent 使用手册
 - README 与当前 fork 实际使用方式对齐
 
@@ -184,7 +186,33 @@
 
 ---
 
-### 8. 增加 agent 使用手册
+### 8. 增加连接健康检查、标准恢复工具与日志状态增强
+
+说明：
+- 新增 `mp_healthCheck`，统一返回连接、页面、项目和日志监听的健康状态
+- 新增 `mp_recoverConnection`，把标准恢复顺序显式化，并返回恢复前后摘要
+- `mp_getLogs` 现在除了日志内容，还会返回日志链路状态信息，如：
+  - `listenerAttached`
+  - `lastLogAt`
+  - `lastListenerBindAt`
+  - `logStoreMode`
+  - `sessionId`
+  - `sourceProjectPath`
+
+关键文件：
+- `src/weappClient.ts`
+- `src/tools/application.ts`
+- `src/prompts.ts`
+- `src/index.ts`
+
+意义：
+- agent 可以先判断“当前是否健康”，再决定是调试还是恢复
+- agent 可以区分“没有日志”与“日志监听异常`
+- 连接失败后不必再靠人工经验决定恢复顺序
+
+---
+
+### 9. 增加 agent 使用手册
 
 相关文档：
 - `docs/weapp-dev-agent-guide.md`
