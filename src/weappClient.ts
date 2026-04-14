@@ -7,6 +7,7 @@ import os from "os";
 
 import {
   ConfigError,
+  globalTimeoutMs,
   resolveConfig,
   type ConnectionOverrides,
   type WeappConnectionConfig,
@@ -37,6 +38,7 @@ export class WeappAutomatorManager {
   private consoleLogs: ConsoleLogEntry[] = [];
   private maxLogs = 1000; // 最多保存1000条日志
   private pendingProjects: { path: string; name: string }[] = [];
+  private loggingAttachedProgram?: MiniProgramInstance;
   
   private static readonly CONFIG_FILE = path.join(
     process.env.USERPROFILE || process.env.HOME || os.tmpdir(),
@@ -151,7 +153,25 @@ export class WeappAutomatorManager {
   clearConsoleLogs(): void {
     this.consoleLogs = [];
   }
-  
+
+  private appendConsoleLog(entry: ConsoleLogEntry): void {
+    const previous = this.consoleLogs[this.consoleLogs.length - 1];
+    if (previous) {
+      const sameType = previous.type === entry.type;
+      const sameMessage = previous.message === entry.message;
+      const sameData = JSON.stringify(previous.data) === JSON.stringify(entry.data);
+      const closeInTime = Math.abs(previous.timestamp - entry.timestamp) <= 100;
+      if (sameType && sameMessage && sameData && closeInTime) {
+        return;
+      }
+    }
+
+    this.consoleLogs.push(entry);
+    if (this.consoleLogs.length > this.maxLogs) {
+      this.consoleLogs.shift();
+    }
+  }
+
   /**
    * 保存项目路径到配置文件
    */
@@ -179,6 +199,37 @@ export class WeappAutomatorManager {
     } catch (error) {
       console.warn("[config] Failed to load project path:", error);
       return null;
+    }
+  }
+
+  async withRequestTimeout<T>(
+    operation: () => Promise<T>,
+    options?: { timeoutMs?: number; description?: string }
+  ): Promise<T> {
+    const timeoutMs = options?.timeoutMs ?? globalTimeoutMs;
+    const description = options?.description ?? "请求";
+    let timer: NodeJS.Timeout | null = null;
+
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new UserError(
+                this.withRecoveryTag(
+                  "REQUEST_TIMEOUT",
+                  `${description} 超时 (${timeoutMs}ms)。请重试一次；如仍失败，请重新执行 mp_ensureConnection 并传 reconnect=true。`
+                )
+              )
+            );
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   }
 
@@ -294,6 +345,7 @@ export class WeappAutomatorManager {
         }
         this.attachLogging(this.miniProgram, log);
       } catch (error) {
+        this.loggingAttachedProgram = undefined;
         this.miniProgram = undefined;
         this.config = undefined;
         const message = error instanceof Error ? error.message : String(error);
@@ -308,6 +360,8 @@ export class WeappAutomatorManager {
           )
         );
       }
+    } else if (this.miniProgram) {
+      this.attachLogging(this.miniProgram, log);
     }
 
     const activeProgram = this.miniProgram!;
@@ -360,6 +414,7 @@ export class WeappAutomatorManager {
       log?.warn("Failed to close WeChat DevTools cleanly", { message });
     } finally {
       this.miniProgram.removeAllListeners();
+      this.loggingAttachedProgram = undefined;
       this.miniProgram = undefined;
       this.config = undefined;
     }
@@ -932,6 +987,12 @@ C. 直接输入项目路径`;
   }
 
   private attachLogging(miniProgram: MiniProgramInstance, log: ToolLogger) {
+    if (this.loggingAttachedProgram === miniProgram) {
+      return;
+    }
+
+    this.loggingAttachedProgram = miniProgram;
+
     miniProgram.on("console", (event: unknown) => {
       const serialized = toSerializable(event);
       const args = (event as any)?.args;
@@ -942,12 +1003,8 @@ C. 直接输入项目路径`;
         data: serialized,
       };
       
-      // 保存日志，限制数量
-      this.consoleLogs.push(logEntry);
-      if (this.consoleLogs.length > this.maxLogs) {
-        this.consoleLogs.shift();
-      }
-      
+      this.appendConsoleLog(logEntry);
+
       log.debug("Mini Program console event", {
         event: serialized,
       });
@@ -961,12 +1018,8 @@ C. 直接输入项目路径`;
         data: serialized,
       };
       
-      // 保存异常日志
-      this.consoleLogs.push(logEntry);
-      if (this.consoleLogs.length > this.maxLogs) {
-        this.consoleLogs.shift();
-      }
-      
+      this.appendConsoleLog(logEntry);
+
       log.error("Mini Program exception", {
         event: serialized,
       });

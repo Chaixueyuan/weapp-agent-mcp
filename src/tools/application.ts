@@ -1,5 +1,6 @@
 import {
   imageContent,
+  UserError,
   type ContentResult,
 } from "fastmcp";
 import { z } from "zod";
@@ -10,6 +11,7 @@ import {
   ToolContext,
   buildUrl,
   connectionContainerSchema,
+  createFunctionFromSource,
   ensureConnectionParameters,
   formatJson,
   querySchema,
@@ -44,6 +46,11 @@ const callWxMethodParameters = connectionContainerSchema.extend({
   args: z.array(z.unknown()).optional(),
 });
 
+const evaluateParameters = connectionContainerSchema.extend({
+  functionSource: z.string().trim().min(1),
+  args: z.array(z.unknown()).optional(),
+});
+
 const getConsoleLogsParameters = connectionContainerSchema.extend({
   clear: z.coerce.boolean().optional().default(false),
 });
@@ -66,6 +73,7 @@ export function createApplicationTools(
     createNavigateTool(manager),
     createScreenshotTool(manager),
     createCallWxMethodTool(manager),
+    createEvaluateTool(manager),
     createGetConsoleLogsTool(manager),
     createCurrentPageTool(manager),
     createListProjectsTool(manager),
@@ -266,6 +274,48 @@ function createCallWxMethodTool(manager: WeappAutomatorManager): AnyTool {
   };
 }
 
+function createEvaluateTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_evaluate",
+    description: "向小程序 AppService 注入并执行函数代码，返回执行结果。适合在 page.data 不稳定时做显式调试读取。",
+    parameters: evaluateParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+      const args = evaluateParameters.parse(rawArgs ?? {});
+      const fn = createFunctionFromSource(args.functionSource, "functionSource");
+      const callArgs = args.args ?? [];
+
+      return manager.withMiniProgram<ContentResult>(
+        context.log,
+        { overrides: args.connection },
+        async (miniProgram) => {
+          let result;
+          try {
+            result = await manager.withRequestTimeout(
+              () => miniProgram.evaluate(fn, ...callArgs),
+              { description: "执行小程序 evaluate" }
+            );
+          } catch (error) {
+            if (error instanceof UserError) {
+              throw error;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            throw new UserError(`执行 evaluate 失败: ${message}`);
+          }
+
+          return toTextResult(
+            formatJson({
+              functionSource: args.functionSource,
+              arguments: callArgs,
+              result: toSerializableValue(result),
+            })
+          );
+        }
+      );
+      }),
+  };
+}
+
 function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_getLogs",
@@ -326,7 +376,10 @@ function createCurrentPageTool(manager: WeappAutomatorManager): AnyTool {
           };
 
           if (args.withData) {
-            const data = await page.data().catch(() => null);
+            const data = await manager.withRequestTimeout(
+              () => page.data(),
+              { description: "读取当前页面数据" }
+            ).catch(() => null);
             result.data = toSerializableValue(data);
           }
 

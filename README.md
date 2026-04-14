@@ -82,6 +82,8 @@ npx weapp-dev-mcp
       "mcp__weapp-dev-mcp__page_setData",
       "mcp__weapp-dev-mcp__page_callMethod",
       "mcp__weapp-dev-mcp__element_tap",
+      "mcp__weapp-dev-mcp__element_touch",
+      "mcp__weapp-dev-mcp__element_swipe",
       "mcp__weapp-dev-mcp__element_input",
       "mcp__weapp-dev-mcp__element_callMethod",
       "mcp__weapp-dev-mcp__element_getData",
@@ -183,7 +185,9 @@ npx weapp-dev-mcp
 
 ### 元素工具（Element Tools）
 
-- `element_tap` – 通过 CSS 选择器模拟点击 WXML 元素；**支持 [index=N] 语法选择第 N 个元素；支持 x/y 坐标偏移点击；增强稳定性：等待元素可交互状态，点击后自动验证页面路径是否变化**
+- `element_tap` – 通过 CSS 选择器模拟点击 WXML 元素；**支持 [index=N] 语法选择第 N 个元素**
+- `element_touch` – 对元素执行真实触摸事件；支持 `start` / `move` / `end` / `sequence` 四种模式，坐标基于元素左上角，默认取元素中心；**支持 [index=N] 语法**
+- `element_swipe` – 对元素执行真实滑动手势；支持 `up` / `down` / `left` / `right`，可指定距离和持续时间；**支持 [index=N] 语法**
 - `element_input` – 向元素输入文本（适用于 `input` 和 `textarea` 组件）
 - `element_callMethod` – 调用自定义组件实例的方法
 - `element_getData` – 获取自定义组件实例的渲染数据

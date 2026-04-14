@@ -300,7 +300,10 @@ function createGetPageDataTool(manager: WeappAutomatorManager): AnyTool {
         context.log,
         { overrides: args.connection },
         async (page) => {
-          const data = await page.data(args.path);
+          const data = await manager.withRequestTimeout(
+            () => page.data(args.path),
+            { description: `读取页面数据${args.path ? ` (${args.path})` : ""}` }
+          );
           return toTextResult(
             formatJson({
               path: args.path ?? null,

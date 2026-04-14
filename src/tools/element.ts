@@ -22,6 +22,36 @@ const tapElementParameters = connectionContainerSchema.extend({
   waitMs: z.coerce.number().int().nonnegative().optional(),
 });
 
+const touchMovePointSchema = z.object({
+  x: z.coerce.number(),
+  y: z.coerce.number(),
+  delayMs: z.coerce.number().int().nonnegative().optional(),
+});
+
+const touchElementParameters = connectionContainerSchema.extend({
+  selector: z.string().trim().min(1),
+  innerSelector: z.string().trim().min(1).optional(),
+  phase: z.enum(["start", "move", "end", "sequence"]),
+  x: z.coerce.number().optional(),
+  y: z.coerce.number().optional(),
+  moves: z.array(touchMovePointSchema).optional(),
+  holdMs: z.coerce.number().int().nonnegative().optional(),
+  waitMs: z.coerce.number().int().nonnegative().optional(),
+  identifier: z.coerce.number().int().nonnegative().optional().default(1),
+});
+
+const swipeElementParameters = connectionContainerSchema.extend({
+  selector: z.string().trim().min(1),
+  innerSelector: z.string().trim().min(1).optional(),
+  direction: z.enum(["up", "down", "left", "right"]),
+  distance: z.coerce.number().positive().optional(),
+  durationMs: z.coerce.number().int().positive().optional().default(300),
+  startX: z.coerce.number().optional(),
+  startY: z.coerce.number().optional(),
+  waitMs: z.coerce.number().int().nonnegative().optional(),
+  identifier: z.coerce.number().int().nonnegative().optional().default(1),
+});
+
 const inputTextParameters = connectionContainerSchema.extend({
   selector: z.string().trim().min(1),
   innerSelector: z.string().trim().min(1).optional(),
@@ -96,6 +126,8 @@ export function createElementTools(
 ): AnyTool[] {
   return [
     createTapElementTool(manager),
+    createTouchElementTool(manager),
+    createSwipeElementTool(manager),
     createInputTextTool(manager),
     createCallElementMethodTool(manager),
     createGetElementDataTool(manager),
@@ -192,6 +224,199 @@ function createTapElementTool(manager: WeappAutomatorManager): AnyTool {
   };
 }
 
+function createTouchElementTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "element_touch",
+    description: "对元素执行真实触摸事件。支持 start、move、end 和 sequence 四种模式；坐标基于元素左上角，默认取元素中心；支持 [index=N] 语法。",
+    parameters: touchElementParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+      const args = touchElementParameters.parse(rawArgs ?? {});
+      const waitMs = args.waitMs;
+
+      return manager.withPage(
+        context.log,
+        { overrides: args.connection },
+        async (page) => {
+          const element = await resolveIndexedElement(
+            page,
+            args.selector,
+            args.innerSelector
+          );
+
+          const position = await getResolvedTouchPosition(element, {
+            x: args.x,
+            y: args.y,
+            identifier: args.identifier,
+          });
+
+          if (args.phase === "start") {
+            await element.touchstart(buildTouchEvent(position));
+            if (args.holdMs) {
+              await waitOnPage(page, args.holdMs);
+            }
+          } else if (args.phase === "move") {
+            await element.touchmove(buildTouchEvent(position));
+          } else if (args.phase === "end") {
+            await element.touchend({
+              touches: [],
+              changeTouches: [position],
+            });
+          } else {
+            await element.touchstart(buildTouchEvent(position));
+
+            if (args.holdMs) {
+              await waitOnPage(page, args.holdMs);
+            }
+
+            const moves = args.moves ?? [];
+            for (const move of moves) {
+              const nextPosition = await getResolvedTouchPosition(element, {
+                x: move.x,
+                y: move.y,
+                identifier: args.identifier,
+              });
+              await element.touchmove(buildTouchEvent(nextPosition));
+              if (move.delayMs) {
+                await waitOnPage(page, move.delayMs);
+              }
+            }
+
+            const finalPosition = moves.length
+              ? await getResolvedTouchPosition(element, {
+                  x: moves[moves.length - 1].x,
+                  y: moves[moves.length - 1].y,
+                  identifier: args.identifier,
+                })
+              : position;
+
+            await element.touchend({
+              touches: [],
+              changeTouches: [finalPosition],
+            });
+          }
+
+          if (waitMs) {
+            await waitOnPage(page, waitMs);
+          }
+
+          return toTextResult(
+            formatJson({
+              selector: args.selector,
+              innerSelector: args.innerSelector ?? null,
+              phase: args.phase,
+              start: position,
+              moves: args.moves ?? [],
+              holdMs: args.holdMs ?? 0,
+              waitMs: waitMs ?? 0,
+            })
+          );
+        }
+      );
+      }),
+  };
+}
+
+function createSwipeElementTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "element_swipe",
+    description: "对元素执行真实滑动手势。适合列表、轮播、可拖拽区域等需要 touch 序列的场景；支持 [index=N] 语法。",
+    parameters: swipeElementParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+      const args = swipeElementParameters.parse(rawArgs ?? {});
+      const waitMs = args.waitMs;
+
+      return manager.withPage(
+        context.log,
+        { overrides: args.connection },
+        async (page) => {
+          const element = await resolveIndexedElement(
+            page,
+            args.selector,
+            args.innerSelector
+          );
+
+          const { size } = await getElementMetrics(element);
+          const start = await getResolvedTouchPosition(element, {
+            x: args.startX,
+            y: args.startY,
+            identifier: args.identifier,
+          });
+
+          const distance = args.distance ?? getDefaultSwipeDistance(size, args.direction);
+          const durationMs = args.durationMs ?? 300;
+          const steps = 6;
+          const delayMs = Math.max(0, Math.round(durationMs / steps));
+          const moves = buildSwipeMoves({
+            startX: start.pageX,
+            startY: start.pageY,
+            distance,
+            direction: args.direction,
+            steps,
+            delayMs,
+            offsetLeft: 0,
+            offsetTop: 0,
+          });
+
+          await element.touchstart(buildTouchEvent(start));
+          for (const move of moves) {
+            const position = {
+              identifier: args.identifier,
+              pageX: move.pageX,
+              pageY: move.pageY,
+              clientX: move.pageX,
+              clientY: move.pageY,
+            };
+            await element.touchmove(buildTouchEvent(position));
+            if (move.delayMs) {
+              await waitOnPage(page, move.delayMs);
+            }
+          }
+
+          const lastMove = moves[moves.length - 1] ?? {
+            pageX: start.pageX,
+            pageY: start.pageY,
+          };
+          await element.touchend({
+            touches: [],
+            changeTouches: [
+              {
+                identifier: args.identifier,
+                pageX: lastMove.pageX,
+                pageY: lastMove.pageY,
+                clientX: lastMove.pageX,
+                clientY: lastMove.pageY,
+              },
+            ],
+          });
+
+          if (waitMs) {
+            await waitOnPage(page, waitMs);
+          }
+
+          return toTextResult(
+            formatJson({
+              selector: args.selector,
+              innerSelector: args.innerSelector ?? null,
+              direction: args.direction,
+              distance,
+              durationMs,
+              start,
+              end: {
+                pageX: lastMove.pageX,
+                pageY: lastMove.pageY,
+              },
+              steps,
+              waitMs: waitMs ?? 0,
+            })
+          );
+        }
+      );
+      }),
+  };
+}
+
 function createInputTextTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_input",
@@ -273,7 +498,10 @@ function createGetElementDataTool(manager: WeappAutomatorManager): AnyTool {
             args.innerSelector
           );
 
-          const data = await element.data(args.path);
+          const data = await manager.withRequestTimeout(
+            () => element.data(args.path),
+            { description: `读取组件数据${args.path ? ` (${args.path})` : ""}` }
+          );
           return toTextResult(
             formatJson({
               selector: args.selector,
@@ -652,4 +880,170 @@ function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyToo
       );
       }),
   };
+}
+
+async function resolveIndexedElement(
+  page: any,
+  selector: string,
+  innerSelector?: string
+): Promise<any> {
+  const parsed = parseSelectorWithIndex(selector);
+  if (!parsed) {
+    return resolveElement(page, selector, innerSelector);
+  }
+
+  if (typeof page.$$ !== "function") {
+    throw new UserError("当前页面不支持查询元素数组。");
+  }
+
+  const elements = await page.$$(parsed.baseSelector);
+  if (!Array.isArray(elements) || elements.length === 0) {
+    throw new UserError(`未找到元素: "${parsed.baseSelector}"`);
+  }
+
+  if (parsed.index < 0 || parsed.index >= elements.length) {
+    throw new UserError(`索引 ${parsed.index} 超出范围 (0-${elements.length - 1})。`);
+  }
+
+  let element = elements[parsed.index];
+  if (innerSelector) {
+    if (typeof element.$ !== "function") {
+      throw new UserError(`元素 "${selector}" 不支持查询内部元素。`);
+    }
+    const inner = await element.$(innerSelector);
+    if (!inner) {
+      throw new UserError(
+        `在元素 "${selector}" 内未找到选择器 "${innerSelector}" 对应的元素。`
+      );
+    }
+    element = inner;
+  }
+
+  return element;
+}
+
+async function getElementMetrics(element: any): Promise<{
+  size: { width: number; height: number };
+  offset: { left: number; top: number };
+}> {
+  const [size, offset] = await Promise.all([
+    typeof element?.size === "function" ? element.size() : null,
+    typeof element?.offset === "function" ? element.offset() : null,
+  ]);
+
+  if (!size || !offset) {
+    throw new UserError("目标元素不支持读取 size/offset，无法执行真实手势。");
+  }
+
+  const width = Number(size.width);
+  const height = Number(size.height);
+  const left = Number(offset.left);
+  const top = Number(offset.top);
+
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    !Number.isFinite(left) ||
+    !Number.isFinite(top)
+  ) {
+    throw new UserError("目标元素的 size/offset 无法转换为有效坐标，无法执行真实手势。");
+  }
+
+  return {
+    size: { width, height },
+    offset: { left, top },
+  };
+}
+
+async function getResolvedTouchPosition(
+  element: any,
+  options: { x?: number; y?: number; identifier?: number }
+): Promise<{
+  identifier: number;
+  pageX: number;
+  pageY: number;
+  clientX: number;
+  clientY: number;
+}> {
+  const { size, offset } = await getElementMetrics(element);
+  const relativeX = options.x ?? size.width / 2;
+  const relativeY = options.y ?? size.height / 2;
+
+  return {
+    identifier: options.identifier ?? 1,
+    pageX: offset.left + relativeX,
+    pageY: offset.top + relativeY,
+    clientX: offset.left + relativeX,
+    clientY: offset.top + relativeY,
+  };
+}
+
+function buildTouchEvent(position: {
+  identifier: number;
+  pageX: number;
+  pageY: number;
+  clientX: number;
+  clientY: number;
+}): {
+  touches: Array<{
+    identifier: number;
+    pageX: number;
+    pageY: number;
+    clientX: number;
+    clientY: number;
+  }>;
+  changeTouches: Array<{
+    identifier: number;
+    pageX: number;
+    pageY: number;
+    clientX: number;
+    clientY: number;
+  }>;
+} {
+  return {
+    touches: [position],
+    changeTouches: [position],
+  };
+}
+
+function getDefaultSwipeDistance(
+  size: { width: number; height: number },
+  direction: "up" | "down" | "left" | "right"
+): number {
+  return direction === "left" || direction === "right"
+    ? Math.max(20, size.width * 0.6)
+    : Math.max(20, size.height * 0.6);
+}
+
+function buildSwipeMoves(options: {
+  startX: number;
+  startY: number;
+  distance: number;
+  direction: "up" | "down" | "left" | "right";
+  steps: number;
+  delayMs: number;
+  offsetLeft: number;
+  offsetTop: number;
+}): Array<{ pageX: number; pageY: number; delayMs: number }> {
+  const deltaX =
+    options.direction === "left"
+      ? -options.distance
+      : options.direction === "right"
+        ? options.distance
+        : 0;
+  const deltaY =
+    options.direction === "up"
+      ? -options.distance
+      : options.direction === "down"
+        ? options.distance
+        : 0;
+
+  return Array.from({ length: options.steps }, (_, index) => {
+    const ratio = (index + 1) / options.steps;
+    return {
+      pageX: options.startX + deltaX * ratio,
+      pageY: options.startY + deltaY * ratio,
+      delayMs: options.delayMs,
+    };
+  });
 }
