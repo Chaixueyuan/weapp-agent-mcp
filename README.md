@@ -8,37 +8,68 @@
 - 本地已安装 Node.js 18+ 和 `npm`
 - 有可以在开发者工具中打开的小程序项目
 
-## 快速开始（npm 包）
+## 快速开始（当前 fork 推荐方式）
 
-`@yfme/weapp-dev-mcp` 已发布到 npm，普通使用者无需克隆仓库或手动执行 `node dist/index.js`。
+当前仓库主要按 **本地 fork / 本地构建产物** 使用，而不是以上游 npm 包作为默认接入方式。
 
-### 使用 npx 运行
-
-```bash
-npx -y @yfme/weapp-dev-mcp
-```
-
-### 安装到项目/全局
+### 本地开发
 
 ```bash
-npm install -g @yfme/weapp-dev-mcp
-weapp-dev-mcp
+npm install
+npm run dev
 ```
 
-或作为项目依赖：
+### 本地构建后运行
 
 ```bash
-npm install --save-dev @yfme/weapp-dev-mcp
-npx weapp-dev-mcp
+npm install
+npm run build
+node dist/index.js
 ```
 
-> 只有在本仓库内开发时，才建议直接运行 `node dist/index.js`。一般用户请按照以上 npm 包方式启动。
+### 在 MCP 客户端中接入本地构建产物
+
+```json
+{
+  "mcpServers": {
+    "weapp-dev": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/weapp-dev-mcp/dist/index.js"
+      ],
+      "env": {
+        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
+      }
+    }
+  }
+}
+```
+
+> 如果你维护的是这个 fork，优先使用本地构建产物接入。只有在明确要验证上游 npm 包行为时，再切换到 `@yfme/weapp-dev-mcp`。
 
 ## MCP 客户端集成
 
 ### 配置
 
-要在 Claude Desktop 或其他 MCP 客户端中使用此服务器，请在配置文件中添加：
+要在 Claude Desktop 或其他 MCP 客户端中使用此服务器，当前 fork 更推荐直接接入本地构建产物：
+
+```json
+{
+  "mcpServers": {
+    "weapp-dev": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/weapp-dev-mcp/dist/index.js"
+      ],
+      "env": {
+        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
+      }
+    }
+  }
+}
+```
+
+如果你明确要验证上游 npm 包，也可以改成：
 
 ```json
 {
@@ -66,35 +97,36 @@ npx weapp-dev-mcp
 {
   "permissions": {
     "allow": [
-      "mcp__weapp-dev-mcp__mp_ensureConnection",
-      "mcp__weapp-dev-mcp__mp_navigate",
-      "mcp__weapp-dev-mcp__mp_screenshot",
-      "mcp__weapp-dev-mcp__mp_callWx",
-      "mcp__weapp-dev-mcp__mp_getLogs",
-      "mcp__weapp-dev-mcp__mp_currentPage",
-      "mcp__weapp-dev-mcp__mp_listProjects",
-      "mcp__weapp-dev-mcp__mp_setDefaultProject",
-      "mcp__weapp-dev-mcp__page_getElement",
-      "mcp__weapp-dev-mcp__page_getElements",
-      "mcp__weapp-dev-mcp__page_waitElement",
-      "mcp__weapp-dev-mcp__page_waitTimeout",
-      "mcp__weapp-dev-mcp__page_getData",
-      "mcp__weapp-dev-mcp__page_setData",
-      "mcp__weapp-dev-mcp__page_callMethod",
-      "mcp__weapp-dev-mcp__element_tap",
-      "mcp__weapp-dev-mcp__element_touch",
-      "mcp__weapp-dev-mcp__element_swipe",
-      "mcp__weapp-dev-mcp__element_input",
-      "mcp__weapp-dev-mcp__element_callMethod",
-      "mcp__weapp-dev-mcp__element_getData",
-      "mcp__weapp-dev-mcp__element_setData",
-      "mcp__weapp-dev-mcp__element_getInnerElement",
-      "mcp__weapp-dev-mcp__element_getInnerElements",
-      "mcp__weapp-dev-mcp__element_getWxml",
-      "mcp__weapp-dev-mcp__element_getStyles",
-      "mcp__weapp-dev-mcp__element_scrollTo",
-      "mcp__weapp-dev-mcp__element_getAttributes",
-      "mcp__weapp-dev-mcp__element_getBoundingClientRect"
+      "mcp__weapp-dev__mp_ensureConnection",
+      "mcp__weapp-dev__mp_navigate",
+      "mcp__weapp-dev__mp_screenshot",
+      "mcp__weapp-dev__mp_callWx",
+      "mcp__weapp-dev__mp_evaluate",
+      "mcp__weapp-dev__mp_getLogs",
+      "mcp__weapp-dev__mp_currentPage",
+      "mcp__weapp-dev__mp_listProjects",
+      "mcp__weapp-dev__mp_setDefaultProject",
+      "mcp__weapp-dev__page_getElement",
+      "mcp__weapp-dev__page_getElements",
+      "mcp__weapp-dev__page_waitElement",
+      "mcp__weapp-dev__page_waitTimeout",
+      "mcp__weapp-dev__page_getData",
+      "mcp__weapp-dev__page_setData",
+      "mcp__weapp-dev__page_callMethod",
+      "mcp__weapp-dev__element_tap",
+      "mcp__weapp-dev__element_touch",
+      "mcp__weapp-dev__element_swipe",
+      "mcp__weapp-dev__element_input",
+      "mcp__weapp-dev__element_callMethod",
+      "mcp__weapp-dev__element_getData",
+      "mcp__weapp-dev__element_setData",
+      "mcp__weapp-dev__element_getInnerElement",
+      "mcp__weapp-dev__element_getInnerElements",
+      "mcp__weapp-dev__element_getWxml",
+      "mcp__weapp-dev__element_getStyles",
+      "mcp__weapp-dev__element_scrollTo",
+      "mcp__weapp-dev__element_getAttributes",
+      "mcp__weapp-dev__element_getBoundingClientRect"
     ]
   }
 }
@@ -168,6 +200,7 @@ npx weapp-dev-mcp
 - `mp_navigate` – 在小程序内导航，支持 `navigateTo`、`redirectTo`、`reLaunch`、`switchTab` 或 `navigateBack`
 - `mp_screenshot` – 捕获屏幕截图并返回（或保存到磁盘）
 - `mp_callWx` – 调用微信小程序 API 方法（如 `wx.showToast`）
+- `mp_evaluate` – 向小程序 AppService 注入并执行函数代码，适合做显式运行时读取
 - `mp_getLogs` – 获取小程序控制台日志，可选择获取后清除
 - `mp_currentPage` – 获取当前页面信息（路径、查询参数、尺寸、滚动位置），`withData` 为 true 时额外返回页面数据
 - `mp_listProjects` – 列出微信开发者工具中的最近项目，方便选择项目目录
@@ -179,8 +212,8 @@ npx weapp-dev-mcp
 - `page_getElements` – 通过选择器获取页面元素数组，返回每个元素的摘要信息；设置 `withWxml: true` 可额外返回每个元素的完整 outerWxml；**支持 [index=N] 语法**
 - `page_waitElement` – 等待元素出现在页面上（⚠️ 不适用于自定义组件内部元素）；**支持 [index=N] 语法；增加超时和重试间隔参数**
 - `page_waitTimeout` – 等待指定的毫秒数
-- `page_getData` – 获取当前页面的数据对象，可指定路径（**支持嵌套路径如 'user.name'**）
-- `page_setData` – 使用 `setData` 更新当前页面的数据；**增加 verify 选项，验证数据是否真正更新成功**
+- `page_getData` – 获取当前页面的数据对象，可选择指定子数据路径
+- `page_setData` – 使用 `setData` 更新当前页面的数据
 - `page_callMethod` – 调用当前页面实例上暴露的方法
 
 ### 元素工具（Element Tools）
@@ -263,8 +296,8 @@ npx weapp-dev-mcp
 {
   "mcpServers": {
     "weapp-dev": {
-      "command": "npx",
-      "args": ["-y", "weapp-dev-mcp"],
+      "command": "node",
+      "args": ["/absolute/path/to/weapp-dev-mcp/dist/index.js"],
       "env": {
         "WEAPP_AUTOLAUNCH": "true",
         "WEAPP_PROJECT_PATH": "D:\\path\\to\\your\\project"
