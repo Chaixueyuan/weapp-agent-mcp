@@ -53,6 +53,10 @@ const evaluateParameters = connectionContainerSchema.extend({
 
 const getConsoleLogsParameters = connectionContainerSchema.extend({
   clear: z.coerce.boolean().optional().default(false),
+  contains: z.string().trim().min(1).optional(),
+  type: z.enum(["log", "info", "warn", "error", "exception"]).optional(),
+  since: z.coerce.number().int().nonnegative().optional(),
+  limit: z.coerce.number().int().positive().optional().default(100),
 });
 
 const currentPageParameters = connectionContainerSchema.extend({
@@ -324,8 +328,31 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
     execute: async (rawArgs) =>
       withUserErrorResult(async () => {
       const args = getConsoleLogsParameters.parse(rawArgs ?? {});
-      const logs = manager.getConsoleLogs();
-      
+      const allLogs = manager.getConsoleLogs();
+      const sinceTimestamp =
+        typeof args.since === "number" ? Date.now() - args.since : undefined;
+
+      let logs = allLogs.filter((log) => {
+        if (args.type && log.type !== args.type) {
+          return false;
+        }
+        if (sinceTimestamp !== undefined && log.timestamp < sinceTimestamp) {
+          return false;
+        }
+        if (args.contains) {
+          const haystack = `${log.message} ${JSON.stringify(log.data ?? "")}`;
+          if (!haystack.includes(args.contains)) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      const limit = args.limit ?? 100;
+      if (logs.length > limit) {
+        logs = logs.slice(-limit);
+      }
+
       if (args.clear) {
         manager.clearConsoleLogs();
       }
@@ -333,6 +360,13 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
       return toTextResult(
         formatJson({
           count: logs.length,
+          totalCount: allLogs.length,
+          filters: {
+            type: args.type ?? null,
+            contains: args.contains ?? null,
+            since: args.since ?? null,
+            limit,
+          },
           logs: logs.map(log => ({
             type: log.type,
             message: log.message,

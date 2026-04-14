@@ -109,6 +109,8 @@ node dist/index.js
       "mcp__weapp-dev__page_getElement",
       "mcp__weapp-dev__page_getElements",
       "mcp__weapp-dev__page_waitElement",
+      "mcp__weapp-dev__page_waitElementGone",
+      "mcp__weapp-dev__page_waitRoute",
       "mcp__weapp-dev__page_waitTimeout",
       "mcp__weapp-dev__page_getData",
       "mcp__weapp-dev__page_setData",
@@ -201,7 +203,7 @@ node dist/index.js
 - `mp_screenshot` – 捕获屏幕截图并返回（或保存到磁盘）
 - `mp_callWx` – 调用微信小程序 API 方法（如 `wx.showToast`）
 - `mp_evaluate` – 向小程序 AppService 注入并执行函数代码，适合做显式运行时读取
-- `mp_getLogs` – 获取小程序控制台日志，可选择获取后清除
+- `mp_getLogs` – 获取小程序控制台日志，支持按 `type`、`contains`、`since`、`limit` 过滤，并可选择获取后清除
 - `mp_currentPage` – 获取当前页面信息（路径、查询参数、尺寸、滚动位置），`withData` 为 true 时额外返回页面数据
 - `mp_listProjects` – 列出微信开发者工具中的最近项目，方便选择项目目录
 - `mp_setDefaultProject` – 设置默认的小程序项目路径，设置后下次连接会自动使用该项目
@@ -211,6 +213,8 @@ node dist/index.js
 - `page_getElement` – 通过选择器获取页面元素，返回元素摘要信息（tagName、text、value、size、offset）；设置 `withWxml: true` 可额外返回完整 outerWxml；**支持 [index=N] 语法选择第 N 个元素**
 - `page_getElements` – 通过选择器获取页面元素数组，返回每个元素的摘要信息；设置 `withWxml: true` 可额外返回每个元素的完整 outerWxml；**支持 [index=N] 语法**
 - `page_waitElement` – 等待元素出现在页面上（⚠️ 不适用于自定义组件内部元素）；**支持 [index=N] 语法；增加超时和重试间隔参数**
+- `page_waitElementGone` – 等待元素从页面上消失；**支持 [index=N] 语法；支持超时和重试间隔参数**
+- `page_waitRoute` – 等待当前页面路径变为指定值，适合确认导航真正完成；支持超时和重试间隔参数
 - `page_waitTimeout` – 等待指定的毫秒数
 - `page_getData` – 获取当前页面的数据对象，可选择指定子数据路径
 - `page_setData` – 使用 `setData` 更新当前页面的数据
@@ -278,6 +282,8 @@ node dist/index.js
 #### 限制说明
 
 - `page_waitElement` **不适用于**自定义组件内部元素。请使用 `page_waitTimeout` 配合元素查询工具进行轮询检查。
+- 页面跳转校验可优先使用 `page_waitRoute`，比单纯 `mp_navigate` 后固定等待更稳。
+- 临时弹层、loading、toast 等消失场景可使用 `page_waitElementGone`。
 
 ### 自动启动功能（AutoLaunch）
 

@@ -38,6 +38,18 @@ const waitForTimeoutParameters = connectionContainerSchema.extend({
   milliseconds: z.coerce.number().int().nonnegative(),
 });
 
+const waitForElementGoneParameters = connectionContainerSchema.extend({
+  selector: z.string().trim().min(1),
+  timeout: z.coerce.number().int().positive().optional().default(5000),
+  retryInterval: z.coerce.number().int().positive().optional().default(200),
+});
+
+const waitForRouteParameters = connectionContainerSchema.extend({
+  path: z.string().trim().min(1),
+  timeout: z.coerce.number().int().positive().optional().default(5000),
+  retryInterval: z.coerce.number().int().positive().optional().default(200),
+});
+
 const getElementParameters = connectionContainerSchema.extend({
   selector: z.string().trim().min(1),
   innerSelector: z.string().trim().min(1).optional(),
@@ -54,6 +66,8 @@ export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
     createGetElementTool(manager),
     createGetElementsTool(manager),
     createWaitForElementTool(manager),
+    createWaitForElementGoneTool(manager),
+    createWaitForRouteTool(manager),
     createWaitForTimeoutTool(manager),
     createGetPageDataTool(manager),
     createSetPageDataTool(manager),
@@ -262,6 +276,104 @@ function createWaitForElementTool(manager: WeappAutomatorManager): AnyTool {
           }
 
           throw new UserError(`等待元素 "${args.selector}" 超时 (${timeout}ms)。`);
+        }
+      );
+      }),
+  };
+}
+
+function createWaitForElementGoneTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_waitElementGone",
+    description: "等待指定选择器的元素从页面上消失。支持 [index=N] 语法选择第 N 个元素。",
+    parameters: waitForElementGoneParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+      const args = waitForElementGoneParameters.parse(rawArgs ?? {});
+      return manager.withPage<ContentResult>(
+        context.log,
+        { overrides: args.connection },
+        async (page) => {
+          if (typeof page.$$ !== "function") {
+            throw new UserError("当前页面不支持查询元素数组。");
+          }
+
+          const startTime = Date.now();
+          const timeout = args.timeout;
+          const retryInterval = args.retryInterval;
+
+          let selector = args.selector;
+          let indexHint: number | undefined;
+
+          const parsed = parseSelectorWithIndex(selector);
+          if (parsed) {
+            selector = parsed.baseSelector;
+            indexHint = parsed.index;
+          }
+
+          while (Date.now() - startTime < timeout) {
+            try {
+              const elements = await page.$$(selector);
+              const isGone =
+                !Array.isArray(elements) ||
+                elements.length === 0 ||
+                (indexHint !== undefined && (indexHint < 0 || indexHint >= elements.length));
+
+              if (isGone) {
+                return toTextResult(formatJson({
+                  selector: args.selector,
+                  gone: true,
+                  waitTime: Date.now() - startTime,
+                }));
+              }
+            } catch (error) {
+              if (error instanceof UserError) {
+                throw error;
+              }
+            }
+            await new Promise(resolve => setTimeout(resolve, retryInterval));
+          }
+
+          throw new UserError(`等待元素 "${args.selector}" 消失超时 (${timeout}ms)。`);
+        }
+      );
+      }),
+  };
+}
+
+function createWaitForRouteTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_waitRoute",
+    description: "等待当前页面路径变为指定值。适合验证页面跳转是否真正完成。",
+    parameters: waitForRouteParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+      const args = waitForRouteParameters.parse(rawArgs ?? {});
+      return manager.withMiniProgram<ContentResult>(
+        context.log,
+        { overrides: args.connection },
+        async (miniProgram) => {
+          const startTime = Date.now();
+          const timeout = args.timeout;
+          const retryInterval = args.retryInterval;
+
+          while (Date.now() - startTime < timeout) {
+            const page = await miniProgram.currentPage();
+            if (page?.path === args.path) {
+              return toTextResult(formatJson({
+                path: args.path,
+                matched: true,
+                waitTime: Date.now() - startTime,
+                query: toSerializableValue(page.query),
+              }));
+            }
+            await new Promise(resolve => setTimeout(resolve, retryInterval));
+          }
+
+          const currentPage = await miniProgram.currentPage().catch(() => null);
+          throw new UserError(
+            `等待页面路径变为 "${args.path}" 超时 (${timeout}ms)。当前页面: "${currentPage?.path ?? "(无)"}"。`
+          );
         }
       );
       }),
