@@ -8,11 +8,10 @@
 
 1. `docs/README.md`
 2. `docs/weapp-dev-agent-guide.md`
-3. `docs/agent-handoff.md`
-4. `docs/roadmap/agent-first-capability-matrix.md`
-5. `docs/specs/`
-6. `docs/official/wechat-devtools-automator/README.md`
-7. `CHANGELOG.md`
+3. `docs/roadmap/agent-first-capability-matrix.md`
+4. `docs/specs/stable-selectors.md`
+5. `docs/official/wechat-devtools-automator/README.md`
+6. `CHANGELOG.md`
 
 这样可以先理解“怎么用”，再理解“当前要补什么”，最后再对照官方底层能力与历史改动。
 

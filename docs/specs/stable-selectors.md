@@ -28,7 +28,6 @@
 - tab / 标签切换项
 - 开关、滑块、Stepper 等状态控件
 - toast / modal 的确认与取消入口
-- 调试页关键开关和重置按钮
 
 ### 2. 优先使用专用 selector，不依赖样式 class
 
@@ -81,12 +80,6 @@
 - 列表容器：`qa-list-orders`
 - 列表项：`qa-item-order`
 - 列表项内按钮：`qa-btn-order-open`
-
-### 调试入口级
-
-- `qa-debug-reset-state`
-- `qa-debug-switch-mock`
-- `qa-debug-login-test-account`
 
 ## 列表场景规范
 
@@ -151,18 +144,6 @@
 
 - 让 agent 依赖组件内部深层结构去猜
 - 让 agent 只靠局部文本反推组件状态
-
-## 调试 / 测试入口规范
-
-如果项目要长期支持 agent 调试，建议业务项目预留一组显式调试入口：
-
-- `qa-debug-entry`
-- `qa-debug-reset-cache`
-- `qa-debug-reset-state`
-- `qa-debug-enable-mock`
-- `qa-debug-switch-account`
-
-这样 agent 能更快构造目标状态，而不是每次都从自然业务流入口绕过去。
 
 ## 推荐写法示例
 
@@ -260,8 +241,6 @@
 - 主按钮点击
 - 输入行为验证
 
-## 落地建议
-
 ### 第一阶段
 
 先给以下元素补齐：
@@ -271,7 +250,6 @@
 - 输入框
 - tab / 标签
 - 列表项
-- 调试入口
 
 ### 第二阶段
 

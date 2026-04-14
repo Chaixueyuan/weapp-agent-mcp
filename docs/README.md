@@ -30,16 +30,7 @@
 - 连接失败时怎么恢复
 - 日志、`data`、`evaluate`、等待能力怎么用
 
-### 3. 接手指南
-
-- `docs/agent-handoff.md`
-
-适合回答：
-
-- 新 agent 第一次接手这个仓库时，先看哪些文档和代码
-- 遇到某类问题时应该查哪里
-
-### 4. agent-first 规划总表
+### 3. agent-first 规划总表
 
 - `docs/roadmap/agent-first-capability-matrix.md`
 
@@ -50,22 +41,18 @@
 - 哪些能力先保留
 - 哪些边界当前不做
 
-### 5. 规格文档
+### 4. 规范文档
 
-当前规格文档：
+当前保留的规范文档：
 
-- `docs/specs/mp-health-check.md`
-- `docs/specs/mp-recover-connection.md`
-- `docs/specs/log-observability.md`
 - `docs/specs/stable-selectors.md`
 
 适合回答：
 
-- 某个能力应该怎么设计
-- 返回字段和状态模型应该长什么样
-- 业务项目应遵循什么选择器规范
+- 业务项目应遵循什么稳定选择器规范
+- agent 应优先依赖哪些 selector
 
-### 6. 官方底层能力索引
+### 5. 官方底层能力索引
 
 - `docs/official/wechat-devtools-automator/README.md`
 
@@ -74,7 +61,7 @@
 - 某个需求是不是官方 `miniprogram-automator` 就支持
 - 当前是“只差 MCP 封装”还是“官方边界受限”
 
-### 7. 交接与历史改动
+### 6. 历史改动
 
 - `CHANGELOG.md`
 
@@ -91,17 +78,14 @@
 
 1. `README.md`
 2. `docs/weapp-dev-agent-guide.md`
-3. `docs/agent-handoff.md`
-4. `docs/roadmap/agent-first-capability-matrix.md`
+3. `docs/roadmap/agent-first-capability-matrix.md`
 
-### 我想直接实现 P0 能力
+### 我想确认当前能力状态
 
 先看：
 
-- `docs/specs/mp-health-check.md`
-- `docs/specs/mp-recover-connection.md`
-- `docs/specs/log-observability.md`
-- `docs/specs/stable-selectors.md`
+- `docs/roadmap/agent-first-capability-matrix.md`
+- `CHANGELOG.md`
 
 ### 我不确定官方底层有没有这个能力
 
@@ -123,7 +107,6 @@
 先看：
 
 - `docs/weapp-dev-agent-guide.md`
-- `docs/specs/log-observability.md`
 - `CHANGELOG.md`
 
 ### 我想知道当前 fork 为什么这样设计
@@ -139,9 +122,8 @@
 
 - `README.md`
 - `docs/weapp-dev-agent-guide.md`
-- `docs/agent-handoff.md`
 
-用途：告诉你怎么接入、怎么起手、怎么接手。
+用途：告诉你怎么接入、怎么起手。
 
 ### B. 规划层
 
@@ -149,11 +131,11 @@
 
 用途：告诉你当前最该做什么，不该优先做什么。
 
-### C. 规格层
+### C. 规范层
 
-- `docs/specs/*`
+- `docs/specs/stable-selectors.md`
 
-用途：告诉你某项能力具体该怎么设计和返回什么。
+用途：告诉你业务页面应如何提供稳定 selector。
 
 ### D. 官方对照层
 
@@ -173,7 +155,7 @@
 
 - 路线图放 `docs/roadmap/`
 - 规格文档放 `docs/specs/`
-- 使用 / 接手文档放 `docs/`
+- 使用文档放 `docs/`
 - 官方对照文档放 `docs/official/`
 
 这样新 agent 进入项目时，不需要猜“应该先看哪份文档”。
