@@ -28,5 +28,5 @@ Thumbs.db
 *.tsbuildinfo
 
 # Claude Code local settings
-.claude/settings.local.json
+.claude/
 

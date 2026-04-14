@@ -85,6 +85,15 @@ const expectDataParameters = connectionContainerSchema.extend({
   expected: z.unknown(),
 });
 
+const pageSnapshotParameters = connectionContainerSchema.extend({
+  selectors: z.array(z.string().trim().min(1)).optional().default([]),
+  dataPaths: z.array(z.string().trim().min(1)).optional().default([]),
+  withData: z.coerce.boolean().optional().default(false),
+  withElements: z.coerce.boolean().optional().default(true),
+  withWxml: z.coerce.boolean().optional().default(false),
+  limit: z.coerce.number().int().positive().optional().default(10),
+});
+
 export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
   return [
     createGetElementTool(manager),
@@ -98,6 +107,7 @@ export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
     createExpectElementTextTool(manager),
     createExpectCountTool(manager),
     createExpectDataTool(manager),
+    createPageSnapshotTool(manager),
     createGetPageDataTool(manager),
     createSetPageDataTool(manager),
     createCallPageMethodTool(manager),
@@ -586,6 +596,75 @@ function createExpectDataTool(manager: WeappAutomatorManager): AnyTool {
                 path: args.path,
               },
             }));
+          }
+        );
+      }),
+  };
+}
+
+function createPageSnapshotTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "page_snapshot",
+    description: "返回当前页面的轻量结构快照，聚合 route、query、指定 data 路径和值，以及关键选择器的元素摘要。不默认处理页面标题；如需校验标题，请用明确选择器配合 page_expectElementText。",
+    parameters: pageSnapshotParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = pageSnapshotParameters.parse(rawArgs ?? {});
+        return manager.withMiniProgram<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (miniProgram) => {
+            const page = await miniProgram.currentPage();
+            if (!page) {
+              throw new UserError("当前没有可用页面，无法生成快照。");
+            }
+
+            const data: Record<string, unknown> = {};
+            if (args.withData) {
+              const fullData = await manager.withRequestTimeout(
+                () => page.data(),
+                { description: "读取页面完整数据快照" }
+              );
+              data["$"] = toSerializableValue(fullData);
+            }
+
+            for (const path of args.dataPaths) {
+              const value = await manager.withRequestTimeout(
+                () => page.data(path),
+                { description: `读取页面数据快照 (${path})` }
+              );
+              data[path] = toSerializableValue(value);
+            }
+
+            const elements: Array<Record<string, unknown>> = [];
+            if (args.withElements) {
+              for (const selector of args.selectors) {
+                if (typeof page.$$ !== "function") {
+                  break;
+                }
+                const matched = await page.$$(selector).catch(() => []);
+                const list = Array.isArray(matched) ? matched.slice(0, args.limit) : [];
+                const summaries = await Promise.all(
+                  list.map(async (element: any, index: number) => ({
+                    selector,
+                    index,
+                    ...(await summarizeElement(element, { withWxml: args.withWxml })),
+                  }))
+                );
+                elements.push(...summaries);
+              }
+            }
+
+            return toTextResult(
+              formatJson({
+                route: page.path,
+                query: toSerializableValue(page.query ?? null),
+                data,
+                selectors: args.selectors,
+                elementCount: elements.length,
+                elements,
+              })
+            );
           }
         );
       }),

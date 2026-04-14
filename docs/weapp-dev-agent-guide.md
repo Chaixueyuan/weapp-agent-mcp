@@ -131,12 +131,19 @@
 - `page_waitElement`
 - `page_waitElementGone`
 - `page_waitRoute`
+- `page_expectRoute`
+- `page_expectVisible`
+- `page_expectElementText`
+- `page_expectCount`
+- `page_expectData`
+- `page_snapshot`
 - `page_getData`
 - `page_callMethod`
 
 用途：
 - 做页面结构和状态判断
 - 等待页面状态变化
+- 对关键 route / 文本 / 数量 / data 做结构化断言
 - 在必要时读取页面 data 或调用页面方法
 
 ### 3. 元素层
@@ -167,6 +174,8 @@
 5. `element_tap` / `element_input`
 6. 再次 `mp_currentPage` / `mp_screenshot`
 7. 需要时用 `page_waitRoute` 或 `page_waitElementGone`
+8. 动作完成后，用 `page_expectRoute` / `page_expectVisible` / `page_expectElementText` / `page_expectCount` / `page_expectData` 做结构化断言
+9. 若要校验页面标题，必须明确是原生标题还是自定义标题；自定义标题用明确选择器配合 `page_expectElementText`，不要默认依赖统一 class / id
 
 适合：
 - 看页面
@@ -174,6 +183,7 @@
 - 验证跳转
 - 验证 tab 切换
 - 做冒烟测试
+- 做轻量回归断言
 
 ### 场景 B：data 调试
 
@@ -210,6 +220,7 @@
 - 先 `mp_ensureConnection`
 - 先看页面路径和截图
 - 把页面路径、截图、元素状态作为主判断依据
+- 标题校验要显式声明来源；不要默认把顶部可见标题等同于原生 navigationBar title
 - 把 `data` 和日志作为补充信息
 - 需要深层读取时显式使用 `mp_evaluate`
 - 若在维护 fork 本身，保留一个本机测试小程序来覆盖导航、输入、列表、滚动、截图和日志链路

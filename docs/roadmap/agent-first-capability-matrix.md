@@ -17,12 +17,12 @@
 | 日志跨进程持久化与过滤 | 已完成 | P0 基线 | 已支持重连后日志恢复、过滤与简单去重 |
 | 页面等待能力 | 已完成 | P0 基线 | 已支持 `page_waitRoute`、`page_waitElementGone` |
 | 真实交互增强 | 已完成 | P0 基线 | 已支持 `element_touch`、`element_swipe` |
-| `mp_healthCheck` | 待做 | P0 | 需要把连接、页面、日志状态聚合成一次性自检结果 |
-| `mp_recoverConnection` | 待做 | P0 | 需要把重连、重绑监听、恢复状态做成显式工具 |
+| `mp_healthCheck` | 已完成 | P0 基线 | 已支持连接、页面、日志状态聚合自检 |
+| `mp_recoverConnection` | 已完成 | P0 基线 | 已支持显式恢复流程与恢复前后摘要 |
 | 稳定选择器规范 | 待做 | P0 | 需要业务项目配合引入统一 `qa-*` 约定 |
-| `mp_getLogs` 状态增强 | 待做 | P0 | 需要显式返回 `listenerAttached`、`lastLogAt` 等状态 |
-| 断言型工具 | 待做 | P1 | 需要把 route / visible / text / count / data 封装成标准断言 |
-| 页面结构快照 | 待做 | P1 | 需要组合 route、query、data、元素摘要和局部布局 |
+| `mp_getLogs` 状态增强 | 已完成 | P0 基线 | 已显式返回 `listenerAttached`、`lastLogAt`、`sessionId` 等状态 |
+| 断言型工具 | 已完成 | P1 基线 | 已支持 route / visible / text / count / data 结构化断言 |
+| 页面结构快照 | 已完成 | P1 基线 | 已支持 `page_snapshot`，可聚合 route、query、指定 data 路径和值、元素摘要 |
 | 编译 / 加载状态读取 | 保留 | P1 | 需要额外接 DevTools CLI / IDE 状态通道 |
 | `mp_runScenario` | 待做 | P2 | 需要在现有原子工具之上补流程编排能力 |
 | 回归测试报告产物 | 待做 | P2 | 需要定义 markdown 报告、截图、路由链和断言结果格式 |
@@ -40,17 +40,9 @@
 
 ### 待做项
 
-1. `mp_healthCheck`
-   - 输出连接、页面、日志、项目路径等关键状态
-   - 作为所有调试流程的起手自检工具
-2. `mp_recoverConnection`
-   - 收敛标准恢复顺序
-   - 恢复后直接输出健康状态
-3. 稳定选择器规范
+1. 稳定选择器规范
    - 为业务页面引入统一 `qa-*` 命名
    - 减少 agent 对视觉结构和脆弱 class 的依赖
-4. `mp_getLogs` 状态增强
-   - 区分“当前没有日志”与“监听根本没挂上”
 
 ### 依赖关系
 
@@ -66,15 +58,9 @@
 
 ### 待做项
 
-1. 断言型工具
-   - `page_expectRoute`
-   - `page_expectElementText`
-   - `page_expectVisible`
-   - `page_expectCount`
-   - `page_expectData`
-2. 页面结构快照
+1. 页面结构快照
    - 汇总 route、query、关键 data、可见元素摘要、局部布局
-3. 编译 / 加载状态读取
+2. 编译 / 加载状态读取
    - 当前先保留，不进入第一批开发
 
 ### 依赖关系

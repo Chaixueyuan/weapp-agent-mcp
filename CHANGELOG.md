@@ -207,8 +207,61 @@
 
 意义：
 - agent 可以先判断“当前是否健康”，再决定是调试还是恢复
-- agent 可以区分“没有日志”与“日志监听异常`
+- agent 可以区分“没有日志”与“日志监听异常”
 - 连接失败后不必再靠人工经验决定恢复顺序
+
+---
+
+### 10. 增加页面断言工具
+
+相关提交：
+- `7bfc6b1` `feat: add page assertion tools`
+
+说明：
+- 新增 5 个轻量断言工具：
+  - `page_expectRoute`
+  - `page_expectVisible`
+  - `page_expectElementText`
+  - `page_expectCount`
+  - `page_expectData`
+- 断言结果统一返回 `pass`、`expected`、`actual` 与 `snapshot`
+- 已在当前打开的微信开发者工具会话中完成自测
+
+关键文件：
+- `src/tools/page.ts`
+- `README.md`
+- `docs/weapp-dev-agent-guide.md`
+- `docs/roadmap/agent-first-capability-matrix.md`
+
+意义：
+- agent 不必每次临时拼 route / 文本 / 数量 / data 判断逻辑
+- 冒烟测试与轻量回归测试可以输出更稳定的结构化结果
+- 为后续 scenario runner 和测试报告能力提供基础
+
+---
+
+### 11. 增加页面结构快照工具
+
+说明：
+- 新增 `page_snapshot`
+- 可一次性返回：
+  - 当前 route
+  - query
+  - 指定 `data` 路径和值
+  - 指定选择器的元素摘要（text / size / offset 等）
+- 不默认处理页面 title；标题可能来自原生 navigationBar 或页面内自定义节点，测试时应显式声明来源
+- 已在当前打开的微信开发者工具会话中验证 detail 页快照输出
+
+关键文件：
+- `src/tools/page.ts`
+- `README.md`
+- `docs/weapp-dev-agent-guide.md`
+- `docs/roadmap/agent-first-capability-matrix.md`
+
+意义：
+- agent 可以用一次调用拿到页面结构判断所需的大部分上下文
+- 降低在回归或调试流程中多次拼 `page_getData` + `page_getElements` 的开销
+- 为后续 `mp_runScenario` 提供更稳定的中间态快照
 
 ---
 

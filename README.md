@@ -118,6 +118,8 @@ node dist/index.js
       "mcp__weapp-dev__mp_evaluate",
       "mcp__weapp-dev__mp_getLogs",
       "mcp__weapp-dev__mp_currentPage",
+      "mcp__weapp-dev__mp_healthCheck",
+      "mcp__weapp-dev__mp_recoverConnection",
       "mcp__weapp-dev__mp_listProjects",
       "mcp__weapp-dev__mp_setDefaultProject",
       "mcp__weapp-dev__page_getElement",
@@ -126,6 +128,11 @@ node dist/index.js
       "mcp__weapp-dev__page_waitElementGone",
       "mcp__weapp-dev__page_waitRoute",
       "mcp__weapp-dev__page_waitTimeout",
+      "mcp__weapp-dev__page_expectRoute",
+      "mcp__weapp-dev__page_expectVisible",
+      "mcp__weapp-dev__page_expectElementText",
+      "mcp__weapp-dev__page_expectCount",
+      "mcp__weapp-dev__page_expectData",
       "mcp__weapp-dev__page_getData",
       "mcp__weapp-dev__page_setData",
       "mcp__weapp-dev__page_callMethod",
@@ -217,8 +224,10 @@ node dist/index.js
 - `mp_screenshot` – 捕获屏幕截图并返回（或保存到磁盘）
 - `mp_callWx` – 调用微信小程序 API 方法（如 `wx.showToast`）
 - `mp_evaluate` – 向小程序 AppService 注入并执行函数代码，适合做显式运行时读取
-- `mp_getLogs` – 获取小程序控制台日志，支持按 `type`、`contains`、`since`、`limit` 过滤，并可选择获取后清除
+- `mp_getLogs` – 获取小程序控制台日志，支持按 `type`、`contains`、`since`、`limit` 过滤，并返回日志监听状态（如 `listenerAttached`、`lastLogAt`、`sessionId`）
 - `mp_currentPage` – 获取当前页面信息（路径、查询参数、尺寸、滚动位置），`withData` 为 true 时额外返回页面数据
+- `mp_healthCheck` – 聚合连接、页面、项目路径和日志监听状态，判断当前是否健康、是否需要恢复
+- `mp_recoverConnection` – 按标准顺序执行恢复，并返回恢复动作、恢复前后状态与最新 health
 - `mp_listProjects` – 列出微信开发者工具中的最近项目，方便选择项目目录
 - `mp_setDefaultProject` – 设置默认的小程序项目路径，设置后下次连接会自动使用该项目
 
@@ -230,6 +239,12 @@ node dist/index.js
 - `page_waitElementGone` – 等待元素从页面上消失；**支持 [index=N] 语法；支持超时和重试间隔参数**
 - `page_waitRoute` – 等待当前页面路径变为指定值，适合确认导航真正完成；支持超时和重试间隔参数
 - `page_waitTimeout` – 等待指定的毫秒数
+- `page_expectRoute` – 断言当前页面路径是否等于预期值
+- `page_expectVisible` – 断言页面上是否存在可定位到的元素；支持 `[index=N]` 语法
+- `page_expectElementText` – 断言元素文本是否等于或包含预期值；支持 `[index=N]` 语法
+- `page_expectCount` – 断言页面上匹配选择器的元素数量是否等于预期值
+- `page_expectData` – 断言当前页面指定 `data` 路径的值是否与预期相等
+- `page_snapshot` – 返回当前页面的轻量结构快照，聚合 route、query、指定 data 路径和值，以及关键选择器的元素摘要；不默认处理页面 title，标题校验请用明确选择器配合 `page_expectElementText`
 - `page_getData` – 获取当前页面的数据对象，可选择指定子数据路径
 - `page_setData` – 使用 `setData` 更新当前页面的数据
 - `page_callMethod` – 调用当前页面实例上暴露的方法
