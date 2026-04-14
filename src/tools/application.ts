@@ -14,10 +14,13 @@ import {
   createFunctionFromSource,
   ensureConnectionParameters,
   formatJson,
+  parseSelectorWithIndex,
   querySchema,
+  summarizeElement,
   toSerializableValue,
   toErrorResult,
   toTextResult,
+  waitOnPage,
   withUserErrorResult,
 } from "./common.js";
 
@@ -78,6 +81,80 @@ const setDefaultProjectParameters = z.object({
   projectPath: z.string().trim().min(1),
 });
 
+const scenarioStepSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("navigate"),
+    path: z.string().trim().min(1),
+    query: querySchema,
+    transition: z.enum(["navigateTo", "redirectTo", "reLaunch", "switchTab", "navigateBack"]).optional().default("navigateTo"),
+    waitMs: z.coerce.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("tap"),
+    selector: z.string().trim().min(1),
+    innerSelector: z.string().trim().min(1).optional(),
+    waitMs: z.coerce.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("input"),
+    selector: z.string().trim().min(1),
+    innerSelector: z.string().trim().min(1).optional(),
+    value: z.union([z.string(), z.coerce.number()]),
+  }),
+  z.object({
+    type: z.literal("waitRoute"),
+    path: z.string().trim().min(1),
+    timeout: z.coerce.number().int().positive().optional().default(5000),
+    retryInterval: z.coerce.number().int().positive().optional().default(200),
+  }),
+  z.object({
+    type: z.literal("expectRoute"),
+    path: z.string().trim().min(1),
+  }),
+  z.object({
+    type: z.literal("expectVisible"),
+    selector: z.string().trim().min(1),
+  }),
+  z.object({
+    type: z.literal("expectText"),
+    selector: z.string().trim().min(1),
+    expected: z.string(),
+    mode: z.enum(["equals", "includes"]).optional().default("equals"),
+  }),
+  z.object({
+    type: z.literal("expectCount"),
+    selector: z.string().trim().min(1),
+    expected: z.coerce.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("expectData"),
+    path: z.string().trim().min(1),
+    expected: z.unknown(),
+  }),
+  z.object({
+    type: z.literal("snapshot"),
+    selectors: z.array(z.string().trim().min(1)).optional().default([]),
+    dataPaths: z.array(z.string().trim().min(1)).optional().default([]),
+    withData: z.coerce.boolean().optional().default(false),
+    withElements: z.coerce.boolean().optional().default(true),
+    withWxml: z.coerce.boolean().optional().default(false),
+    limit: z.coerce.number().int().positive().optional().default(10),
+  }),
+  z.object({
+    type: z.literal("getLogs"),
+    clear: z.coerce.boolean().optional().default(false),
+    contains: z.string().trim().min(1).optional(),
+    logType: z.enum(["log", "info", "warn", "error", "exception"]).optional(),
+    since: z.coerce.number().int().nonnegative().optional(),
+    limit: z.coerce.number().int().positive().optional().default(100),
+  }),
+]);
+
+const runScenarioParameters = connectionContainerSchema.extend({
+  stopOnFailure: z.coerce.boolean().optional().default(true),
+  steps: z.array(scenarioStepSchema).min(1),
+});
+
 export function createApplicationTools(
   manager: WeappAutomatorManager
 ): AnyTool[] {
@@ -90,6 +167,7 @@ export function createApplicationTools(
     createCallWxMethodTool(manager),
     createEvaluateTool(manager),
     createGetConsoleLogsTool(manager),
+    createRunScenarioTool(manager),
     createCurrentPageTool(manager),
     createListProjectsTool(manager),
     createSetDefaultProjectTool(manager),
@@ -497,6 +575,64 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
   };
 }
 
+function createRunScenarioTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_runScenario",
+    description: "按顺序执行一组页面调试/测试步骤。最小版支持 navigate、tap、input、waitRoute、expect、snapshot 和 getLogs。",
+    parameters: runScenarioParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = runScenarioParameters.parse(rawArgs ?? {});
+        const results: Array<Record<string, unknown>> = [];
+        let failed = false;
+
+        for (let index = 0; index < args.steps.length; index += 1) {
+          const step = args.steps[index];
+          try {
+            const result = await executeScenarioStep(manager, context, step, args.connection);
+            const pass = getScenarioStepPass(step, result);
+            results.push({
+              index,
+              type: step.type,
+              pass,
+              result,
+            });
+            if (!pass && args.stopOnFailure) {
+              failed = true;
+              break;
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            results.push({
+              index,
+              type: step.type,
+              pass: false,
+              error: message,
+            });
+            if (args.stopOnFailure) {
+              failed = true;
+              break;
+            }
+          }
+        }
+
+        const passedCount = results.filter((item) => item.pass === true).length;
+        return toTextResult(
+          formatJson({
+            ok: !failed && results.every((item) => item.pass !== false),
+            stopOnFailure: args.stopOnFailure,
+            totalSteps: args.steps.length,
+            executedSteps: results.length,
+            passedSteps: passedCount,
+            failedSteps: results.length - passedCount,
+            results,
+          })
+        );
+      }),
+    timeoutMs: 120000,
+  };
+}
+
 function createCurrentPageTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_currentPage",
@@ -565,6 +701,239 @@ function createListProjectsTool(manager: WeappAutomatorManager): AnyTool {
       }),
     timeoutMs: 10000,
   };
+}
+
+async function executeScenarioStep(
+  manager: WeappAutomatorManager,
+  context: ToolContext,
+  step: z.infer<typeof scenarioStepSchema>,
+  connection: z.infer<typeof runScenarioParameters>["connection"],
+): Promise<Record<string, unknown>> {
+  switch (step.type) {
+    case "navigate": {
+      return manager.withMiniProgram(context.log, { overrides: connection }, async (miniProgram) => {
+        const transition = step.transition ?? "navigateTo";
+        const url = transition === "navigateBack" ? undefined : buildUrl(step.path, step.query);
+        let page;
+        if (transition === "navigateBack") {
+          page = await miniProgram.navigateBack();
+        } else if (transition === "navigateTo") {
+          page = await miniProgram.navigateTo(url!);
+        } else if (transition === "redirectTo") {
+          page = await miniProgram.redirectTo(url!);
+        } else if (transition === "reLaunch") {
+          page = await miniProgram.reLaunch(url!);
+        } else {
+          page = await miniProgram.switchTab(url!);
+        }
+        if (step.waitMs && page) {
+          await waitOnPage(page, step.waitMs);
+        }
+        const activePage = page ?? (await miniProgram.currentPage());
+        return {
+          transition,
+          url: url ?? null,
+          activePage: activePage ? { path: activePage.path, query: toSerializableValue(activePage.query) } : null,
+        };
+      });
+    }
+    case "tap": {
+      return manager.withPage(context.log, { overrides: connection }, async (page) => {
+        const element = await resolveScenarioElement(page, step.selector, step.innerSelector);
+        await element.tap();
+        if (step.waitMs) {
+          await waitOnPage(page, step.waitMs);
+        }
+        return { selector: step.selector, innerSelector: step.innerSelector ?? null, tapped: true };
+      });
+    }
+    case "input": {
+      return manager.withPage(context.log, { overrides: connection }, async (page) => {
+        const element = await resolveScenarioElement(page, step.selector, step.innerSelector);
+        await element.input(step.value);
+        return { selector: step.selector, innerSelector: step.innerSelector ?? null, value: step.value };
+      });
+    }
+    case "waitRoute": {
+      return manager.withMiniProgram(context.log, { overrides: connection }, async (miniProgram) => {
+        const start = Date.now();
+        while (Date.now() - start < step.timeout) {
+          const page = await miniProgram.currentPage();
+          if (page?.path === step.path) {
+            return { path: step.path, matched: true, waitTime: Date.now() - start, query: toSerializableValue(page.query) };
+          }
+          await new Promise(resolve => setTimeout(resolve, step.retryInterval));
+        }
+        const currentPage = await miniProgram.currentPage().catch(() => null);
+        return { path: step.path, matched: false, actual: currentPage?.path ?? null };
+      });
+    }
+    case "expectRoute": {
+      return manager.withMiniProgram(context.log, { overrides: connection }, async (miniProgram) => {
+        const page = await miniProgram.currentPage();
+        const actual = page?.path ?? null;
+        return { pass: actual === step.path, expected: step.path, actual, snapshot: { path: actual, query: toSerializableValue(page?.query ?? null) } };
+      });
+    }
+    case "expectVisible": {
+      return manager.withPage(context.log, { overrides: connection }, async (page) => {
+        let selector = step.selector;
+        let indexHint: number | undefined;
+        const parsed = parseSelectorWithIndex(selector);
+        if (parsed) {
+          selector = parsed.baseSelector;
+          indexHint = parsed.index;
+        }
+        const elements = typeof page.$$ === "function" ? await page.$$(selector) : [];
+        const count = Array.isArray(elements) ? elements.length : 0;
+        const pass = indexHint !== undefined ? indexHint >= 0 && indexHint < count : count > 0;
+        return { pass, expected: true, actual: pass, snapshot: { selector: step.selector, count, index: indexHint ?? null } };
+      });
+    }
+    case "expectText": {
+      return manager.withPage(context.log, { overrides: connection }, async (page) => {
+        const element = await resolveScenarioElement(page, step.selector);
+        const actual = typeof element?.text === "function" ? await element.text().catch(() => null) : null;
+        const normalized = typeof actual === "string" ? actual : String(actual ?? "");
+        const pass = step.mode === "includes" ? normalized.includes(step.expected) : normalized === step.expected;
+        return { pass, expected: step.expected, actual: normalized, snapshot: { selector: step.selector, mode: step.mode } };
+      });
+    }
+    case "expectCount": {
+      return manager.withPage(context.log, { overrides: connection }, async (page) => {
+        const elements = typeof page.$$ === "function" ? await page.$$(step.selector) : [];
+        const actual = Array.isArray(elements) ? elements.length : 0;
+        return { pass: actual === step.expected, expected: step.expected, actual, snapshot: { selector: step.selector } };
+      });
+    }
+    case "expectData": {
+      return manager.withPage(context.log, { overrides: connection }, async (page) => {
+        const actual = await manager.withRequestTimeout(() => page.data(step.path), { description: `读取页面数据 (${step.path})` });
+        const normalizedActual = toSerializableValue(actual);
+        const normalizedExpected = toSerializableValue(step.expected);
+        return { pass: JSON.stringify(normalizedActual) === JSON.stringify(normalizedExpected), expected: normalizedExpected, actual: normalizedActual, snapshot: { path: step.path } };
+      });
+    }
+    case "snapshot": {
+      return manager.withMiniProgram(context.log, { overrides: connection }, async (miniProgram) => {
+        const page = await miniProgram.currentPage();
+        if (!page) {
+          throw new UserError("当前没有可用页面，无法生成快照。");
+        }
+        const data: Record<string, unknown> = {};
+        if (step.withData) {
+          const fullData = await manager.withRequestTimeout(() => page.data(), { description: "读取页面完整数据快照" });
+          data["$"] = toSerializableValue(fullData);
+        }
+        for (const path of step.dataPaths) {
+          const value = await manager.withRequestTimeout(() => page.data(path), { description: `读取页面数据快照 (${path})` });
+          data[path] = toSerializableValue(value);
+        }
+        const elements: Array<Record<string, unknown>> = [];
+        if (step.withElements && typeof page.$$ === "function") {
+          for (const selector of step.selectors) {
+            const matched = await page.$$(selector).catch(() => []);
+            const list = Array.isArray(matched) ? matched.slice(0, step.limit) : [];
+            const summaries = await Promise.all(list.map(async (element: any, index: number) => ({ selector, index, ...(await summarizeElement(element, { withWxml: step.withWxml })) })));
+            elements.push(...summaries);
+          }
+        }
+        return { route: page.path, query: toSerializableValue(page.query ?? null), data, selectors: step.selectors, elementCount: elements.length, elements };
+      });
+    }
+    case "getLogs": {
+      const allLogs = await manager.getConsoleLogs();
+      const sinceTimestamp = typeof step.since === "number" ? Date.now() - step.since : undefined;
+      let logs = allLogs.filter((log) => {
+        if (step.logType && log.type !== step.logType) {
+          return false;
+        }
+        if (sinceTimestamp !== undefined && log.timestamp < sinceTimestamp) {
+          return false;
+        }
+        if (step.contains) {
+          const haystack = `${log.message} ${JSON.stringify(log.data ?? "")}`;
+          if (!haystack.includes(step.contains)) {
+            return false;
+          }
+        }
+        return true;
+      });
+      if (logs.length > step.limit) {
+        logs = logs.slice(-step.limit);
+      }
+      if (step.clear) {
+        await manager.clearConsoleLogs();
+      }
+      const logStatus = await manager.getLogStatus();
+      return {
+        count: logs.length,
+        totalCount: allLogs.length,
+        listenerAttached: logStatus.listenerAttached,
+        lastLogAt: logStatus.lastLogAt,
+        sessionId: logStatus.sessionId,
+        logs: logs.map((log) => ({ type: log.type, message: log.message, timestamp: log.timestamp, data: log.data })),
+      };
+    }
+  }
+}
+
+function getScenarioStepPass(step: z.infer<typeof scenarioStepSchema>, result: Record<string, unknown>): boolean {
+  if (step.type.startsWith("expect") || step.type === "waitRoute") {
+    return result.pass === true || result.matched === true;
+  }
+  return true;
+}
+
+async function resolveScenarioElement(page: any, selector: string, innerSelector?: string): Promise<any> {
+  let baseSelector = selector;
+  let indexHint: number | undefined;
+  const parsed = parseSelectorWithIndex(selector);
+  if (parsed) {
+    baseSelector = parsed.baseSelector;
+    indexHint = parsed.index;
+  }
+
+  if (indexHint === undefined) {
+    let element = await page.$(baseSelector);
+    if (!element) {
+      throw new UserError(`Element not found for selector "${selector}".`);
+    }
+    if (innerSelector) {
+      if (typeof element.$ !== "function") {
+        throw new UserError(`Element for selector "${selector}" does not support nested queries.`);
+      }
+      const inner = await element.$(innerSelector);
+      if (!inner) {
+        throw new UserError(`Element not found for selector "${innerSelector}" within "${selector}".`);
+      }
+      element = inner;
+    }
+    return element;
+  }
+
+  if (typeof page.$$ !== "function") {
+    throw new UserError("当前页面不支持查询元素数组。");
+  }
+  const elements = await page.$$(baseSelector);
+  if (!Array.isArray(elements) || elements.length === 0) {
+    throw new UserError(`Element not found for selector "${baseSelector}".`);
+  }
+  if (indexHint < 0 || indexHint >= elements.length) {
+    throw new UserError(`索引 ${indexHint} 超出范围 (0-${elements.length - 1})。`);
+  }
+  let element = elements[indexHint];
+  if (innerSelector) {
+    if (typeof element.$ !== "function") {
+      throw new UserError(`Element for selector "${selector}" does not support nested queries.`);
+    }
+    const inner = await element.$(innerSelector);
+    if (!inner) {
+      throw new UserError(`Element not found for selector "${innerSelector}" within "${selector}".`);
+    }
+    element = inner;
+  }
+  return element;
 }
 
 function createSetDefaultProjectTool(manager: WeappAutomatorManager): AnyTool {

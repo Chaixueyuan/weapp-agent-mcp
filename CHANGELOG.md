@@ -240,6 +240,39 @@
 
 ---
 
+### 12. 增加最小版 scenario runner
+
+说明：
+- 新增 `mp_runScenario`
+- 当前最小版支持步骤：
+  - `navigate`
+  - `tap`
+  - `input`
+  - `waitRoute`
+  - `expectRoute`
+  - `expectVisible`
+  - `expectText`
+  - `expectCount`
+  - `expectData`
+  - `snapshot`
+  - `getLogs`
+- 已在当前打开的微信开发者工具会话中验证一条 detail 页 scenario
+- `title` 不作为默认判断项；要测标题需显式 selector
+- `switchTab` 只作为导航动作，不默认表示底部 tab UI 状态正确
+
+关键文件：
+- `src/tools/application.ts`
+- `README.md`
+- `docs/weapp-dev-agent-guide.md`
+- `docs/roadmap/agent-first-capability-matrix.md`
+
+意义：
+- agent 可以把导航、断言、快照和日志抓取压缩成一次结构化调用
+- 为后续回归测试报告产物提供稳定输入
+- 保持对自定义 title / 自定义 tab 场景的兼容边界
+
+---
+
 ### 11. 增加页面结构快照工具
 
 说明：
