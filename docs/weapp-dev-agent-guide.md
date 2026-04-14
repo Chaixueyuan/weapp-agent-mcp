@@ -219,12 +219,13 @@
 1. `mp_ensureConnection`
 2. `mp_healthCheck`
 3. `mp_runScenario`
-4. 若 scenario 失败，再回到 `page_*` / `element_*` 做局部排查
+4. 需要产出可复核结果时，再调用 `mp_generateScenarioReport`
+5. 若 scenario 失败，再回到 `page_*` / `element_*` 做局部排查
 
 适合：
 - 冒烟测试
 - 轻量回归测试
-- 把导航、断言、快照和日志抓取收敛成单次调用
+- 把导航、断言、快照、截图和日志抓取收敛成单次调用
 
 边界：
 - `title` 不作为默认判断项；要测标题时，用明确选择器配合 `expectText`

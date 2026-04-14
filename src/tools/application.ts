@@ -1,3 +1,6 @@
+import { dirname } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+
 import {
   imageContent,
   UserError,
@@ -148,11 +151,23 @@ const scenarioStepSchema = z.discriminatedUnion("type", [
     since: z.coerce.number().int().nonnegative().optional(),
     limit: z.coerce.number().int().positive().optional().default(100),
   }),
+  z.object({
+    type: z.literal("screenshot"),
+    path: z.string().trim().min(1).optional(),
+  }),
 ]);
 
 const runScenarioParameters = connectionContainerSchema.extend({
   stopOnFailure: z.coerce.boolean().optional().default(true),
   steps: z.array(scenarioStepSchema).min(1),
+});
+
+const generateScenarioReportParameters = runScenarioParameters.extend({
+  title: z.string().trim().min(1).optional(),
+  outputPath: z.string().trim().min(1).optional(),
+  includeLogs: z.coerce.boolean().optional().default(true),
+  includeSnapshots: z.coerce.boolean().optional().default(true),
+  includePassedSteps: z.coerce.boolean().optional().default(true),
 });
 
 export function createApplicationTools(
@@ -168,6 +183,7 @@ export function createApplicationTools(
     createEvaluateTool(manager),
     createGetConsoleLogsTool(manager),
     createRunScenarioTool(manager),
+    createGenerateScenarioReportTool(manager),
     createCurrentPageTool(manager),
     createListProjectsTool(manager),
     createSetDefaultProjectTool(manager),
@@ -583,49 +599,45 @@ function createRunScenarioTool(manager: WeappAutomatorManager): AnyTool {
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
         const args = runScenarioParameters.parse(rawArgs ?? {});
-        const results: Array<Record<string, unknown>> = [];
-        let failed = false;
+        const summary = await runScenario(manager, context, args.steps, args.connection, args.stopOnFailure);
+        return toTextResult(formatJson(summary));
+      }),
+    timeoutMs: 120000,
+  };
+}
 
-        for (let index = 0; index < args.steps.length; index += 1) {
-          const step = args.steps[index];
-          try {
-            const result = await executeScenarioStep(manager, context, step, args.connection);
-            const pass = getScenarioStepPass(step, result);
-            results.push({
-              index,
-              type: step.type,
-              pass,
-              result,
-            });
-            if (!pass && args.stopOnFailure) {
-              failed = true;
-              break;
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            results.push({
-              index,
-              type: step.type,
-              pass: false,
-              error: message,
-            });
-            if (args.stopOnFailure) {
-              failed = true;
-              break;
-            }
-          }
+function createGenerateScenarioReportTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_generateScenarioReport",
+    description: "执行 scenario 并输出最小 markdown 回归报告；可选写入 outputPath。适合把步骤结果、快照和日志整理成人可复核的产物。",
+    parameters: generateScenarioReportParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = generateScenarioReportParameters.parse(rawArgs ?? {});
+        const summary = await runScenario(manager, context, args.steps, args.connection, args.stopOnFailure);
+        const markdown = buildScenarioReportMarkdown({
+          title: args.title,
+          includeLogs: args.includeLogs,
+          includeSnapshots: args.includeSnapshots,
+          includePassedSteps: args.includePassedSteps,
+          summary,
+        });
+
+        if (args.outputPath) {
+          await mkdir(dirname(args.outputPath), { recursive: true });
+          await writeFile(args.outputPath, markdown, "utf-8");
         }
 
-        const passedCount = results.filter((item) => item.pass === true).length;
         return toTextResult(
           formatJson({
-            ok: !failed && results.every((item) => item.pass !== false),
-            stopOnFailure: args.stopOnFailure,
-            totalSteps: args.steps.length,
-            executedSteps: results.length,
-            passedSteps: passedCount,
-            failedSteps: results.length - passedCount,
-            results,
+            ok: summary.ok,
+            outputPath: args.outputPath ?? null,
+            title: args.title ?? null,
+            totalSteps: summary.totalSteps,
+            executedSteps: summary.executedSteps,
+            passedSteps: summary.passedSteps,
+            failedSteps: summary.failedSteps,
+            report: markdown,
           })
         );
       }),
@@ -700,6 +712,68 @@ function createListProjectsTool(manager: WeappAutomatorManager): AnyTool {
       );
       }),
     timeoutMs: 10000,
+  };
+}
+
+async function runScenario(
+  manager: WeappAutomatorManager,
+  context: ToolContext,
+  steps: Array<z.infer<typeof scenarioStepSchema>>,
+  connection: z.infer<typeof runScenarioParameters>["connection"],
+  stopOnFailure: boolean,
+): Promise<{
+  ok: boolean;
+  stopOnFailure: boolean;
+  totalSteps: number;
+  executedSteps: number;
+  passedSteps: number;
+  failedSteps: number;
+  results: Array<Record<string, unknown>>;
+}> {
+  const results: Array<Record<string, unknown>> = [];
+  let failed = false;
+
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    try {
+      const result = await executeScenarioStep(manager, context, step, connection);
+      const pass = getScenarioStepPass(step, result);
+      results.push({
+        index,
+        type: step.type,
+        pass,
+        step,
+        result,
+      });
+      if (!pass && stopOnFailure) {
+        failed = true;
+        break;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      results.push({
+        index,
+        type: step.type,
+        pass: false,
+        step,
+        error: message,
+      });
+      if (stopOnFailure) {
+        failed = true;
+        break;
+      }
+    }
+  }
+
+  const passedCount = results.filter((item) => item.pass === true).length;
+  return {
+    ok: !failed && results.every((item) => item.pass !== false),
+    stopOnFailure,
+    totalSteps: steps.length,
+    executedSteps: results.length,
+    passedSteps: passedCount,
+    failedSteps: results.length - passedCount,
+    results,
   };
 }
 
@@ -875,6 +949,22 @@ async function executeScenarioStep(
         logs: logs.map((log) => ({ type: log.type, message: log.message, timestamp: log.timestamp, data: log.data })),
       };
     }
+    case "screenshot": {
+      return manager.withMiniProgram(context.log, { overrides: connection }, async (miniProgram) => {
+        const output = await miniProgram.screenshot(step.path ? { path: step.path } : undefined);
+        if (typeof output === "string") {
+          return {
+            mode: "inline",
+            path: step.path ?? null,
+            data: output,
+          };
+        }
+        return {
+          mode: "file",
+          path: step.path ?? null,
+        };
+      });
+    }
   }
 }
 
@@ -883,6 +973,113 @@ function getScenarioStepPass(step: z.infer<typeof scenarioStepSchema>, result: R
     return result.pass === true || result.matched === true;
   }
   return true;
+}
+
+function buildScenarioReportMarkdown(input: {
+  title?: string;
+  includeLogs: boolean;
+  includeSnapshots: boolean;
+  includePassedSteps: boolean;
+  summary: {
+    ok: boolean;
+    stopOnFailure: boolean;
+    totalSteps: number;
+    executedSteps: number;
+    passedSteps: number;
+    failedSteps: number;
+    results: Array<Record<string, unknown>>;
+  };
+}): string {
+  const title = input.title?.trim() || "Scenario Report";
+  const lines: string[] = [
+    `# ${title}`,
+    "",
+    "## Summary",
+    "",
+    `- Status: ${input.summary.ok ? "PASS" : "FAIL"}`,
+    `- stopOnFailure: ${input.summary.stopOnFailure}`,
+    `- totalSteps: ${input.summary.totalSteps}`,
+    `- executedSteps: ${input.summary.executedSteps}`,
+    `- passedSteps: ${input.summary.passedSteps}`,
+    `- failedSteps: ${input.summary.failedSteps}`,
+    "",
+    "## Steps",
+    "",
+  ];
+
+  for (const item of input.summary.results) {
+    const pass = item.pass === true;
+    if (!input.includePassedSteps && pass) {
+      continue;
+    }
+    const index = typeof item.index === "number" ? item.index : -1;
+    const type = typeof item.type === "string" ? item.type : "unknown";
+    lines.push(`### ${index + 1}. ${type} ${pass ? "PASS" : "FAIL"}`);
+    lines.push("");
+
+    const step = item.step;
+    if (step && typeof step === "object") {
+      lines.push("**Step**");
+      lines.push("```json");
+      lines.push(formatJson(step));
+      lines.push("```");
+      lines.push("");
+    }
+
+    if (typeof item.error === "string") {
+      lines.push("**Error**");
+      lines.push("```");
+      lines.push(item.error);
+      lines.push("```");
+      lines.push("");
+      continue;
+    }
+
+    const result = item.result;
+    if (result && typeof result === "object") {
+      const record = result as Record<string, unknown>;
+      const filtered = filterScenarioReportResult(record, {
+        includeLogs: input.includeLogs,
+        includeSnapshots: input.includeSnapshots,
+      });
+      if (type === "screenshot" && typeof record.path === "string" && record.path) {
+        lines.push(`**Screenshot**: \`${record.path}\``);
+        lines.push("");
+      }
+      lines.push("**Result**");
+      lines.push("```json");
+      lines.push(formatJson(filtered));
+      lines.push("```");
+      lines.push("");
+    }
+  }
+
+  return `${lines.join("\n").trim()}\n`;
+}
+
+function filterScenarioReportResult(
+  result: Record<string, unknown>,
+  options: { includeLogs: boolean; includeSnapshots: boolean },
+): Record<string, unknown> {
+  const next = { ...result };
+  if (!options.includeLogs && Array.isArray(next.logs)) {
+    delete next.logs;
+  }
+  if (!options.includeSnapshots) {
+    if ("elements" in next) {
+      delete next.elements;
+    }
+    if ("data" in next) {
+      delete next.data;
+    }
+    if ("snapshot" in next) {
+      delete next.snapshot;
+    }
+    if (next.mode === "inline" && "data" in next) {
+      delete next.data;
+    }
+  }
+  return next;
 }
 
 async function resolveScenarioElement(page: any, selector: string, innerSelector?: string): Promise<any> {

@@ -225,7 +225,8 @@ node dist/index.js
 - `mp_callWx` – 调用微信小程序 API 方法（如 `wx.showToast`）
 - `mp_evaluate` – 向小程序 AppService 注入并执行函数代码，适合做显式运行时读取
 - `mp_getLogs` – 获取小程序控制台日志，支持按 `type`、`contains`、`since`、`limit` 过滤，并返回日志监听状态（如 `listenerAttached`、`lastLogAt`、`sessionId`）
-- `mp_runScenario` – 按顺序执行一组最小测试步骤，当前支持 `navigate`、`tap`、`input`、`waitRoute`、`expect*`、`snapshot`、`getLogs`
+- `mp_runScenario` – 按顺序执行一组最小测试步骤，当前支持 `navigate`、`tap`、`input`、`waitRoute`、`expect*`、`snapshot`、`getLogs`、`screenshot`
+- `mp_generateScenarioReport` – 执行 scenario 并输出 markdown 报告；可选写入 `outputPath`，适合产出轻量回归测试记录，并可引用截图路径
 - `mp_currentPage` – 获取当前页面信息（路径、查询参数、尺寸和滚动位置），`withData` 为 true 时额外返回页面数据
 - `mp_healthCheck` – 聚合连接、页面、项目路径和日志监听状态，判断当前是否健康、是否需要恢复
 - `mp_recoverConnection` – 按标准顺序执行恢复，并返回恢复动作、恢复前后状态与最新 health

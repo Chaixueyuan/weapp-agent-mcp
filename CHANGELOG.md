@@ -240,6 +240,29 @@
 
 ---
 
+### 13. 增加最小版回归测试报告工具
+
+说明：
+- 新增 `mp_generateScenarioReport`
+- 复用 `mp_runScenario` 执行结果生成最小 markdown 报告
+- 支持可选 `outputPath`，可直接将报告写入文件
+- 当前支持按需保留或裁剪步骤通过项、日志和快照内容
+- scenario 步骤新增 `screenshot`，报告中可直接引用截图路径
+- 已在当前打开的微信开发者工具会话中验证 detail 页报告输出
+
+关键文件：
+- `src/tools/application.ts`
+- `README.md`
+- `docs/weapp-dev-agent-guide.md`
+- `docs/roadmap/agent-first-capability-matrix.md`
+
+意义：
+- agent 可以把一次 scenario 执行结果整理成人类可快速复核的 markdown 产物
+- 为后续补截图、路由链和更完整报告模板保留演进空间
+- 保持当前最小改动原则，不额外引入复杂测试框架
+
+---
+
 ### 12. 增加最小版 scenario runner
 
 说明：

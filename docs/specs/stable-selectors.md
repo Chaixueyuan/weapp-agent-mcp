@@ -234,6 +234,34 @@
 
 ## 落地建议
 
+### 最小落地模板
+
+建议业务页面至少补齐这 4 类节点：
+
+- 页面根节点：`qa-page-*`
+- 主操作按钮：`qa-btn-*`
+- 关键输入框：`qa-input-*`
+- 关键结果节点：`qa-text-*` / `qa-state-*`
+
+一个最小可测页面示例：
+
+```xml
+<view class="page qa-page-detail">
+  <view class="title qa-text-detail-title">详情页已打开</view>
+  <button class="primary-btn qa-btn-back-home" bindtap="backHome">返回首页</button>
+  <input class="search-input qa-input-keyword" />
+</view>
+```
+
+这样 agent 至少可以稳定做：
+
+- route 断言
+- 标题 / 关键文本断言
+- 主按钮点击
+- 输入行为验证
+
+## 落地建议
+
 ### 第一阶段
 
 先给以下元素补齐：
