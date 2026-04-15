@@ -77,10 +77,12 @@ export class WeappAutomatorManager {
   private listenerAttached = false;
   private lastLogAt: number | null = null;
   private lastListenerBindAt: number | null = null;
+  private screenshotQueue: Promise<void> = Promise.resolve();
+  private screenshotCooldownMs = 300;
   
   private static readonly CONFIG_FILE = path.join(
     process.env.USERPROFILE || process.env.HOME || os.tmpdir(),
-    ".weapp-dev-mcp-config.json"
+    ".weapp-agent-mcp-config.json"
   );
 
   // 微信开发者工具目录名称（跨平台常量）
@@ -362,6 +364,29 @@ export class WeappAutomatorManager {
       if (timer) {
         clearTimeout(timer);
       }
+    }
+  }
+
+  async runSerializedScreenshot<T>(
+    log: ToolLogger,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const previous = this.screenshotQueue;
+    let release!: () => void;
+    this.screenshotQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous.catch(() => undefined);
+    log.info("Acquired screenshot lane", {
+      cooldownMs: this.screenshotCooldownMs,
+    });
+
+    try {
+      return await operation();
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, this.screenshotCooldownMs));
+      release();
     }
   }
 

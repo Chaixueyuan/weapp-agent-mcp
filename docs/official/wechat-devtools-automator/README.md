@@ -209,7 +209,7 @@ Mock / 测试相关 API：
 - 多账号调试依赖 `miniProgram.testAccounts()`
 - 多机同账号可以配合 `miniProgram.getTicket()`
 
-## 对当前 fork 最有参考价值的页面
+## 对当前项目最有参考价值的页面
 
 如果后续只想快速查最相关的官方 API，优先看这四个文件：
 - `docs/official/wechat-devtools-automator/automator.txt`

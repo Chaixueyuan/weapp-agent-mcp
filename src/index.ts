@@ -10,10 +10,10 @@ import { globalTimeoutMs } from "./config.js";
 const manager = new WeappAutomatorManager();
 
 const server = new FastMCP({
-  name: "weapp-dev-mcp",
-  version: "0.2.2",
+  name: "weapp-agent-mcp",
+  version: "0.3.0",
   instructions:
-    "Controls WeChat Mini Program projects through WeChat DevTools using miniprogram-automator. Call mp_ensureConnection first, then mp_healthCheck before mp_screenshot, page_*, or element_* tools. If healthCheck shows recovery is needed, prefer mp_recoverConnection instead of blindly retrying page actions. If the server asks for project selection, call mp_listProjects or retry mp_ensureConnection with projectSelection instead of blindly repeating the same call.",
+    "Controls WeChat Mini Program projects through WeChat DevTools using miniprogram-automator. Call mp_ensureConnection first, then mp_healthCheck before mp_screenshot, page_*, or element_* tools. If healthCheck shows recovery is needed, prefer mp_recoverConnection instead of blindly retrying page actions. If the server asks for project selection, call mp_listProjects or retry mp_ensureConnection with projectSelection instead of blindly repeating the same call. Treat mp_screenshot as a serialized single-lane capability rather than a parallel-safe one. Prefer shorter, segmented scenarios instead of one long high-pressure scenario, and after repeated screenshot/snapshot failures run mp_healthCheck and then mp_recoverConnection if needed.",
 });
 
 const tools = createTools(manager).map(tool => ({

@@ -17,8 +17,10 @@ const connectionFlow = [
   "2. Call mp_healthCheck to confirm the session, route, and log listener status.",
   "3. If healthCheck is healthy, call mp_currentPage to confirm the active page.",
   "4. Only then call mp_screenshot, page_*, or element_* tools.",
-  "5. If healthCheck says recovery is needed, call mp_recoverConnection instead of blindly retrying other tools.",
-  "6. If a tool says PROJECT_SELECTION_REQUIRED, call mp_listProjects or provide projectSelection to mp_ensureConnection.",
+  "5. Treat mp_screenshot as a serialized single-lane capability; do not run screenshot steps in parallel.",
+  "6. Prefer shorter segmented scenarios instead of one long high-pressure scenario.",
+  "7. If screenshot or snapshot keeps failing, call mp_healthCheck first, then mp_recoverConnection if needed.",
+  "8. If a tool says PROJECT_SELECTION_REQUIRED, call mp_listProjects or provide projectSelection to mp_ensureConnection.",
 ].join("\n");
 
 export function createPrompts(): WeappPrompt[] {
@@ -41,7 +43,7 @@ export function createPrompts(): WeappPrompt[] {
           "",
           "After connection succeeds:",
           "- Call mp_currentPage.",
-          "- Call mp_screenshot.",
+          "- Call mp_screenshot once in serial mode; do not overlap it with other screenshot work.",
           "- If needed, use page_getElements or page_getElement to inspect the UI tree.",
           `- Report the current page path and whether the requested home-page UI is visible.${target}`,
           "",
@@ -89,7 +91,8 @@ export function createPrompts(): WeappPrompt[] {
           "Workflow:",
           "- Call mp_ensureConnection.",
           "- Call mp_currentPage to confirm the active route.",
-          "- Call mp_screenshot.",
+          "- Call mp_screenshot in isolation; do not overlap screenshot calls.",
+          "- If screenshot fails repeatedly, call mp_healthCheck and then mp_recoverConnection if needed.",
           "- Report the saved screenshot path or the inline image result.",
         ].join("\n");
       },

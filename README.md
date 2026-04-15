@@ -1,29 +1,105 @@
-# 微信小程序 MCP 服务器
+# weapp-agent-mcp
 
-基于 FastMCP 的服务器，通过 [`miniprogram-automator`](https://www.npmjs.com/package/miniprogram-automator) 自动化微信开发者工具。该服务器提供 MCP 工具，让 AI 助手能够导航、检查和操作小程序页面——类似于 `playwright-mcp`，但专为微信生态系统定制。
+`weapp-agent-mcp` 是一个面向 agent 的微信小程序 MCP 服务，基于 [`miniprogram-automator`](https://www.npmjs.com/package/miniprogram-automator) 封装微信开发者工具自动化能力，用于页面调试、元素操作、轻量回归测试与恢复友好型排查。
+
+它适合：
+- agent 主开发 / 主调试
+- 串行截图与页面巡检
+- 轻量 scenario / report
+- 基于稳定 selector 的自动化验证
+
+它当前不应被宣传为：
+- 并发截图通道
+- 超长高压全链路回归引擎
+
+> 项目来源：本仓库基于上游 `weapp-dev-mcp` / `@yfme/weapp-dev-mcp` 演进而来，当前以独立发布与 agent-first 体验为目标继续维护。
 
 ## 文档导航
 
-如果你是新接手这个 fork 的维护者或 agent，建议先按下面顺序看文档：
-
-1. `docs/README.md`
-2. `docs/weapp-dev-agent-guide.md`
-3. `docs/roadmap/agent-first-capability-matrix.md`
-4. `docs/specs/stable-selectors.md`
-5. `docs/official/wechat-devtools-automator/README.md`
-6. `CHANGELOG.md`
-
-这样可以先理解“怎么用”，再理解“当前要补什么”，最后再对照官方底层能力与历史改动。
+更完整的文档入口见 `docs/README.md`。
 
 ## 前置要求
 
 - 已安装微信开发者工具，支持命令行访问（`cli` / `cli.bat`）
 - 本地已安装 Node.js 18+ 和 `npm`
 - 有可以在开发者工具中打开的小程序项目
+- 已在微信开发者工具中开启自动化测试与服务端口
 
-## 快速开始（当前 fork 推荐方式）
+## 快速开始
 
-当前仓库主要按 **本地 fork / 本地构建产物** 使用，而不是以上游 npm 包作为默认接入方式。
+### 方式一：通过 npm / npx 接入（推荐，普通用户默认这样用）
+
+不需要先把仓库拉到本地，也不需要自己手动构建 `dist`。只要本机有 Node.js 和 `npx`，就可以直接在 MCP 客户端里这样配置：
+
+```json
+{
+  "mcpServers": {
+    "weapp-agent-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@chaixueyuan/weapp-agent-mcp"
+      ],
+      "env": {
+        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
+      }
+    }
+  }
+}
+```
+
+> 如果你希望在 Claude 等客户端里用更短的别名，也可以把 MCP server key 命名为 `weapp-dev`，但发布包名和服务名以 `weapp-agent-mcp` 为准。
+
+可选：如果你习惯全局安装，也可以先执行：
+
+```bash
+npm install -g @chaixueyuan/weapp-agent-mcp
+```
+
+然后把 MCP 配置改成：
+
+```json
+{
+  "mcpServers": {
+    "weapp-agent-mcp": {
+      "command": "weapp-agent-mcp",
+      "env": {
+        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
+      }
+    }
+  }
+}
+```
+
+### 方式二：本地源码构建接入（仅开发者 / 贡献者）
+
+只有在以下场景才需要这样用：
+
+- 你正在开发这个仓库本身
+- 你要调试尚未发布到 npm 的改动
+- 你要在本地修改源码后立刻验证
+
+```bash
+npm install
+npm run build
+node dist/index.js
+```
+
+```json
+{
+  "mcpServers": {
+    "weapp-agent-mcp": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/weapp-agent-mcp/dist/index.js"
+      ],
+      "env": {
+        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
+      }
+    }
+  }
+}
+```
 
 ### 本地开发
 
@@ -32,74 +108,15 @@ npm install
 npm run dev
 ```
 
-### 本地构建后运行
+## 重要边界
 
-```bash
-npm install
-npm run build
-node dist/index.js
-```
-
-### 在 MCP 客户端中接入本地构建产物
-
-```json
-{
-  "mcpServers": {
-    "weapp-dev": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/weapp-dev-mcp/dist/index.js"
-      ],
-      "env": {
-        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
-      }
-    }
-  }
-}
-```
-
-> 如果你维护的是这个 fork，优先使用本地构建产物接入。只有在明确要验证上游 npm 包行为时，再切换到 `@yfme/weapp-dev-mcp`。
+- `mp_screenshot` 当前按串行单通道能力设计，不支持并发压测
+- 复杂业务链建议拆成多个短 scenario，而不是一个超长 scenario
+- `page_snapshot`、`mp_screenshot`、长 `mp_runScenario` 在连续复杂操作后可能超时
+- 若出现连续失败，先运行 `mp_healthCheck`，必要时执行 `mp_recoverConnection`
+- 稳定性高度依赖业务页面提供清晰的 `qa-*` selector 或其他稳定定位锚点
 
 ## MCP 客户端集成
-
-### 配置
-
-要在 Claude Desktop 或其他 MCP 客户端中使用此服务器，当前 fork 更推荐直接接入本地构建产物：
-
-```json
-{
-  "mcpServers": {
-    "weapp-dev": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/weapp-dev-mcp/dist/index.js"
-      ],
-      "env": {
-        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
-      }
-    }
-  }
-}
-```
-
-如果你明确要验证上游 npm 包，也可以改成：
-
-```json
-{
-  "mcpServers": {
-    "weapp-dev": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@yfme/weapp-dev-mcp"
-      ],
-      "env": {
-        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
-      }
-    }
-  }
-}
-```
 
 ### Claude Code 自动批准工具权限
 由于使用 Claude Code 调用 MCP 工具时，会触发工具调用权限申请，此时可能会丢失 MCP 与微信开发者工具的连接状态，由于获取控制台输出高度依赖连接状态，此时会无法连贯的获取输出日志，所以建议手动添加权限：
@@ -110,45 +127,45 @@ node dist/index.js
 {
   "permissions": {
     "allow": [
-      "mcp__weapp-dev__mp_ensureConnection",
-      "mcp__weapp-dev__mp_navigate",
-      "mcp__weapp-dev__mp_screenshot",
-      "mcp__weapp-dev__mp_callWx",
-      "mcp__weapp-dev__mp_evaluate",
-      "mcp__weapp-dev__mp_getLogs",
-      "mcp__weapp-dev__mp_currentPage",
-      "mcp__weapp-dev__mp_healthCheck",
-      "mcp__weapp-dev__mp_recoverConnection",
-      "mcp__weapp-dev__mp_listProjects",
-      "mcp__weapp-dev__mp_setDefaultProject",
-      "mcp__weapp-dev__page_getElement",
-      "mcp__weapp-dev__page_getElements",
-      "mcp__weapp-dev__page_waitElement",
-      "mcp__weapp-dev__page_waitElementGone",
-      "mcp__weapp-dev__page_waitRoute",
-      "mcp__weapp-dev__page_waitTimeout",
-      "mcp__weapp-dev__page_expectRoute",
-      "mcp__weapp-dev__page_expectVisible",
-      "mcp__weapp-dev__page_expectElementText",
-      "mcp__weapp-dev__page_expectCount",
-      "mcp__weapp-dev__page_expectData",
-      "mcp__weapp-dev__page_getData",
-      "mcp__weapp-dev__page_setData",
-      "mcp__weapp-dev__page_callMethod",
-      "mcp__weapp-dev__element_tap",
-      "mcp__weapp-dev__element_touch",
-      "mcp__weapp-dev__element_swipe",
-      "mcp__weapp-dev__element_input",
-      "mcp__weapp-dev__element_callMethod",
-      "mcp__weapp-dev__element_getData",
-      "mcp__weapp-dev__element_setData",
-      "mcp__weapp-dev__element_getInnerElement",
-      "mcp__weapp-dev__element_getInnerElements",
-      "mcp__weapp-dev__element_getWxml",
-      "mcp__weapp-dev__element_getStyles",
-      "mcp__weapp-dev__element_scrollTo",
-      "mcp__weapp-dev__element_getAttributes",
-      "mcp__weapp-dev__element_getBoundingClientRect"
+      "mcp__weapp-agent-mcp__mp_ensureConnection",
+      "mcp__weapp-agent-mcp__mp_navigate",
+      "mcp__weapp-agent-mcp__mp_screenshot",
+      "mcp__weapp-agent-mcp__mp_callWx",
+      "mcp__weapp-agent-mcp__mp_evaluate",
+      "mcp__weapp-agent-mcp__mp_getLogs",
+      "mcp__weapp-agent-mcp__mp_currentPage",
+      "mcp__weapp-agent-mcp__mp_healthCheck",
+      "mcp__weapp-agent-mcp__mp_recoverConnection",
+      "mcp__weapp-agent-mcp__mp_listProjects",
+      "mcp__weapp-agent-mcp__mp_setDefaultProject",
+      "mcp__weapp-agent-mcp__page_getElement",
+      "mcp__weapp-agent-mcp__page_getElements",
+      "mcp__weapp-agent-mcp__page_waitElement",
+      "mcp__weapp-agent-mcp__page_waitElementGone",
+      "mcp__weapp-agent-mcp__page_waitRoute",
+      "mcp__weapp-agent-mcp__page_waitTimeout",
+      "mcp__weapp-agent-mcp__page_expectRoute",
+      "mcp__weapp-agent-mcp__page_expectVisible",
+      "mcp__weapp-agent-mcp__page_expectElementText",
+      "mcp__weapp-agent-mcp__page_expectCount",
+      "mcp__weapp-agent-mcp__page_expectData",
+      "mcp__weapp-agent-mcp__page_getData",
+      "mcp__weapp-agent-mcp__page_setData",
+      "mcp__weapp-agent-mcp__page_callMethod",
+      "mcp__weapp-agent-mcp__element_tap",
+      "mcp__weapp-agent-mcp__element_touch",
+      "mcp__weapp-agent-mcp__element_swipe",
+      "mcp__weapp-agent-mcp__element_input",
+      "mcp__weapp-agent-mcp__element_callMethod",
+      "mcp__weapp-agent-mcp__element_getData",
+      "mcp__weapp-agent-mcp__element_setData",
+      "mcp__weapp-agent-mcp__element_getInnerElement",
+      "mcp__weapp-agent-mcp__element_getInnerElements",
+      "mcp__weapp-agent-mcp__element_getWxml",
+      "mcp__weapp-agent-mcp__element_getStyles",
+      "mcp__weapp-agent-mcp__element_scrollTo",
+      "mcp__weapp-agent-mcp__element_getAttributes",
+      "mcp__weapp-agent-mcp__element_getBoundingClientRect"
     ]
   }
 }
@@ -332,9 +349,12 @@ node dist/index.js
 ```json
 {
   "mcpServers": {
-    "weapp-dev": {
-      "command": "node",
-      "args": ["/absolute/path/to/weapp-dev-mcp/dist/index.js"],
+    "weapp-agent-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@chaixueyuan/weapp-agent-mcp"
+      ],
       "env": {
         "WEAPP_AUTOLAUNCH": "true",
         "WEAPP_PROJECT_PATH": "D:\\path\\to\\your\\project"

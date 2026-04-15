@@ -45,6 +45,7 @@ const navigateParameters = connectionContainerSchema
 
 const screenshotParameters = connectionContainerSchema.extend({
   path: z.string().trim().min(1).optional(),
+  timeoutMs: z.coerce.number().int().positive().optional().default(30000),
 });
 
 const callWxMethodParameters = connectionContainerSchema.extend({
@@ -154,6 +155,7 @@ const scenarioStepSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("screenshot"),
     path: z.string().trim().min(1).optional(),
+    timeoutMs: z.coerce.number().int().positive().optional().default(30000),
   }),
 ]);
 
@@ -421,30 +423,77 @@ function createScreenshotTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_screenshot",
     description:
-      "截取当前小程序视口的截图。需要已有活动会话；若提示没有活动会话，请先调用 mp_ensureConnection。默认返回内联图片，或保存到文件路径。",
+      "截取当前小程序视口的截图。需要已有活动会话；若提示没有活动会话，请先调用 mp_ensureConnection。默认返回内联图片，或保存到文件路径。支持 timeoutMs；注意官方说明该能力仅支持开发者工具模拟器。",
     parameters: screenshotParameters,
+    timeoutMs: 60000,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
       const args = screenshotParameters.parse(rawArgs ?? {});
       return manager.withMiniProgram<ContentResult>(
         context.log,
         { overrides: args.connection },
-        async (miniProgram) => {
-          const output = await miniProgram.screenshot(
-            args.path ? { path: args.path } : undefined
-          );
+        async (miniProgram, config) => {
+          const currentPage = await miniProgram.currentPage().catch(() => null);
+          const screenshotMode = args.path ? "file" : "inline";
+
+          context.log.info("Starting miniProgram.screenshot", {
+            mode: screenshotMode,
+            path: args.path ?? null,
+            timeoutMs: args.timeoutMs,
+            route: currentPage?.path ?? null,
+            connectionMode: config.mode,
+            wsEndpoint: config.wsEndpoint ?? null,
+            projectPath: config.projectPath ?? null,
+          });
+
+          let output: string | void;
+          try {
+            output = await manager.runSerializedScreenshot(
+              context.log,
+              () => manager.withRequestTimeout(
+                () => miniProgram.screenshot(args.path ? { path: args.path } : undefined),
+                {
+                  timeoutMs: args.timeoutMs,
+                  description: `执行页面截图（mode=${screenshotMode}）`,
+                }
+              )
+            );
+          } catch (error) {
+            if (error instanceof UserError) {
+              throw new UserError(
+                `${error.message}\n\n截图诊断：\n- 当前 route: ${currentPage?.path ?? "unknown"}\n- 截图模式: ${screenshotMode}\n- 输出路径: ${args.path ?? "<inline>"}\n- 工具超时: ${args.timeoutMs}ms\n- 官方说明：miniProgram.screenshot 仅支持开发者工具模拟器，客户端不可用。`
+              );
+            }
+            throw error;
+          }
 
           if (typeof output === "string") {
+            context.log.info("miniProgram.screenshot returned inline base64", {
+              size: output.length,
+            });
             const buffer = Buffer.from(output, "base64");
             const image = await imageContent({ buffer });
             return { content: [image] };
           }
 
           if (args.path) {
-            return toTextResult(`截图已保存到 ${args.path}`);
+            context.log.info("miniProgram.screenshot saved file", {
+              path: args.path,
+            });
+            return toTextResult(
+              formatJson({
+                ok: true,
+                mode: "file",
+                path: args.path,
+                route: currentPage?.path ?? null,
+                timeoutMs: args.timeoutMs,
+              })
+            );
           }
 
-          return toErrorResult("截图未产生图片数据。");
+          return toErrorResult(
+            "截图未产生图片数据。官方说明：miniProgram.screenshot 不传 path 时应返回 base64；若当前环境为客户端而非开发者工具模拟器，截图能力可能不可用。"
+          );
         }
       );
       }),
@@ -594,7 +643,7 @@ function createGetConsoleLogsTool(manager: WeappAutomatorManager): AnyTool {
 function createRunScenarioTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_runScenario",
-    description: "按顺序执行一组页面调试/测试步骤。最小版支持 navigate、tap、input、waitRoute、expect、snapshot 和 getLogs。",
+    description: "按顺序执行一组页面调试/测试步骤。最小版支持 navigate、tap、input、waitRoute、expect、snapshot 和 getLogs。适合短链路分段执行，不建议把整条复杂业务链一次性塞进单个 scenario。",
     parameters: runScenarioParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -732,6 +781,7 @@ async function runScenario(
 }> {
   const results: Array<Record<string, unknown>> = [];
   let failed = false;
+  const totalSteps = steps.length;
 
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
@@ -756,7 +806,10 @@ async function runScenario(
         type: step.type,
         pass: false,
         step,
-        error: message,
+        error: buildScenarioFailureMessage(step, message, {
+          index,
+          totalSteps,
+        }),
       });
       if (stopOnFailure) {
         failed = true;
@@ -951,17 +1004,34 @@ async function executeScenarioStep(
     }
     case "screenshot": {
       return manager.withMiniProgram(context.log, { overrides: connection }, async (miniProgram) => {
-        const output = await miniProgram.screenshot(step.path ? { path: step.path } : undefined);
+        const currentPage = await miniProgram.currentPage().catch(() => null);
+        const screenshotMode = step.path ? "file" : "inline";
+        const output = await manager.runSerializedScreenshot(
+          context.log,
+          () => manager.withRequestTimeout(
+            () => miniProgram.screenshot(step.path ? { path: step.path } : undefined),
+            {
+              timeoutMs: step.timeoutMs,
+              description: `执行 scenario 截图（mode=${screenshotMode}）`,
+            }
+          )
+        );
         if (typeof output === "string") {
           return {
+            ok: true,
             mode: "inline",
             path: step.path ?? null,
+            route: currentPage?.path ?? null,
+            timeoutMs: step.timeoutMs,
             data: output,
           };
         }
         return {
+          ok: true,
           mode: "file",
           path: step.path ?? null,
+          route: currentPage?.path ?? null,
+          timeoutMs: step.timeoutMs,
         };
       });
     }
@@ -973,6 +1043,33 @@ function getScenarioStepPass(step: z.infer<typeof scenarioStepSchema>, result: R
     return result.pass === true || result.matched === true;
   }
   return true;
+}
+
+function buildScenarioFailureMessage(
+  step: z.infer<typeof scenarioStepSchema>,
+  message: string,
+  context: { index: number; totalSteps: number }
+): string {
+  const hints: string[] = [];
+
+  if (step.type === "screenshot") {
+    hints.push("截图步骤当前按单通道能力设计，不要并发执行。若连续失败，先运行 mp_healthCheck，必要时执行 mp_recoverConnection。");
+  }
+
+  if (step.type === "snapshot") {
+    hints.push("page_snapshot 在复杂连续操作后可能超时；建议只在关键节点采集快照，不要在长链路中高频叠加。若失败，先运行 mp_healthCheck，必要时执行 mp_recoverConnection。");
+  }
+
+  if (context.totalSteps >= 10) {
+    hints.push("当前 scenario 步数较多，长链路压测下可能整体超时；更推荐拆成多个短 scenario 分段执行。",
+    );
+  }
+
+  if (!hints.length) {
+    return message;
+  }
+
+  return `${message}\n\n建议：\n- ${hints.join("\n- ")}`;
 }
 
 function buildScenarioReportMarkdown(input: {

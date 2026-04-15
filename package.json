@@ -1,10 +1,10 @@
 {
-  "name": "@yfme/weapp-dev-mcp",
-  "version": "0.2.2",
-  "description": "FastMCP server for automating WeChat Mini Program developer tooling - Enhanced with auto-launch and stability fixes",
+  "name": "@chaixueyuan/weapp-agent-mcp",
+  "version": "0.3.0",
+  "description": "Agent-first MCP server for WeChat Mini Program debugging, automation, and lightweight testing",
   "type": "module",
   "bin": {
-    "weapp-dev-mcp": "dist/index.js"
+    "weapp-agent-mcp": "dist/index.js"
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
@@ -18,15 +18,15 @@
     "mini-program",
     "automation"
   ],
-  "author": "yfme <admin@yfme.me> (https://github.com/yfmeii)",
+  "author": "chaixueyuan",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yfmeii/weapp-dev-mcp.git"
+    "url": "git+https://github.com/Chaixueyuan/weapp-agent-mcp.git"
   },
-  "homepage": "https://github.com/yfmeii/weapp-dev-mcp#readme",
+  "homepage": "https://github.com/Chaixueyuan/weapp-agent-mcp#readme",
   "bugs": {
-    "url": "https://github.com/yfmeii/weapp-dev-mcp/issues"
+    "url": "https://github.com/Chaixueyuan/weapp-agent-mcp/issues"
   },
   "files": [
     "dist",
