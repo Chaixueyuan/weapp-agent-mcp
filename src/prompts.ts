@@ -13,14 +13,17 @@ export type WeappPrompt = {
 const connectionFlow = [
   "Use this MCP with a stable workflow.",
   "",
-  "1. Call mp_ensureConnection first.",
-  "2. Call mp_healthCheck to confirm the session, route, and log listener status.",
-  "3. If healthCheck is healthy, call mp_currentPage to confirm the active page.",
-  "4. Only then call mp_screenshot, page_*, or element_* tools.",
-  "5. Treat mp_screenshot as a serialized single-lane capability; do not run screenshot steps in parallel.",
-  "6. Prefer shorter segmented scenarios instead of one long high-pressure scenario.",
-  "7. If screenshot or snapshot keeps failing, call mp_healthCheck first, then mp_recoverConnection if needed.",
-  "8. If a tool says PROJECT_SELECTION_REQUIRED, call mp_listProjects or provide projectSelection to mp_ensureConnection.",
+  "1. Call mp_diagnoseConnection first.",
+  "2. Then call mp_ensureConnection.",
+  "3. Call mp_healthCheck to confirm the session, route, and log listener status.",
+  "4. If healthCheck is healthy, call mp_currentPage to confirm the active page.",
+  "5. Only then call mp_screenshot, page_*, or element_* tools.",
+  "6. Treat mp_screenshot as a serialized single-lane capability; do not run screenshot steps in parallel.",
+  "7. Prefer shorter segmented scenarios instead of one long high-pressure scenario.",
+  "8. If screenshot or snapshot keeps failing, call mp_healthCheck first, then mp_recoverConnection if needed.",
+  "9. If a tool says PROJECT_SELECTION_REQUIRED, call mp_listProjects or provide projectSelection to mp_ensureConnection.",
+  "10. If the user already opened WeChat DevTools, do not instruct cli open, cli auto, or cli quit.",
+  "11. Do not switch ports automatically after a failed connection.",
 ].join("\n");
 
 export function createPrompts(): WeappPrompt[] {

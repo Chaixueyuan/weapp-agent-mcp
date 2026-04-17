@@ -127,6 +127,7 @@ npm run dev
 {
   "permissions": {
     "allow": [
+      "mcp__weapp-agent-mcp__mp_diagnoseConnection",
       "mcp__weapp-agent-mcp__mp_ensureConnection",
       "mcp__weapp-agent-mcp__mp_navigate",
       "mcp__weapp-agent-mcp__mp_screenshot",
@@ -211,10 +212,10 @@ npm run dev
 
 | 变量 | 说明 |
 | --- | --- |
-| `WEAPP_WS_ENDPOINT` | **【推荐】** 已运行的开发者工具 WebSocket 端点。设置后，服务器使用 `connect` 模式而不是启动新实例。示例：`ws://localhost:9420` |
+| `WEAPP_WS_ENDPOINT` | **【推荐】** 已运行的开发者工具自动化 WebSocket 端点。设置后，服务器使用 `connect` 模式而不是启动新实例。示例：`ws://localhost:9420` |
 | `WECHAT_DEVTOOLS_CLI_PATH` | 微信开发者工具 CLI 路径（如果默认路径有效则可选）。 |
 | `WEAPP_AUTOMATOR_MODE` | 强制使用 `launch` 或 `connect` 模式。除非提供了 `WEAPP_WS_ENDPOINT`，否则默认为 `launch`。 |
-| `WEAPP_DEVTOOLS_PORT` | 启动开发者工具时的首选端口（回退到可用端口）。 |
+| `WEAPP_DEVTOOLS_PORT` | `launch` 模式下传给 `cli auto --auto-port` 的自动化端口。不会在失败后自动切到其他端口。 |
 | `WEAPP_DEVTOOLS_TIMEOUT` | 启动超时时间（毫秒，默认 30000）。 |
 | `WEAPP_AUTO_ACCOUNT` | 传递给 `--auto-account` 用于自动登录。 |
 | `WEAPP_DEVTOOLS_TICKET` | 启动时传递给 `--ticket`。 |
@@ -222,7 +223,7 @@ npm run dev
 | `WEAPP_DEVTOOLS_ARGS` | 启动时的额外 CLI 参数（空格分隔）。 |
 | `WEAPP_DEVTOOLS_CWD` | 传递给开发者工具进程的工作目录。 |
 | `WEAPP_AUTOCLOSE` | 设置为 `true` 时，每次工具调用后关闭开发者工具会话。 |
-| `WEAPP_AUTOLAUNCH` | 设为 `true` 时，自动检测并启动开发者工具 |
+| `WEAPP_AUTOLAUNCH` | 仅在显式 `launch` 路径下用于辅助启动开发者工具；不会在 `connect` 失败后自动切换模式或端口 |
 | `WEAPP_LAUNCH_TIMEOUT` | 启动超时时间（毫秒，默认 45000） |
 | `WEAPP_CONNECT_TIMEOUT` | 连接超时时间（毫秒，默认 45000） |
 | `WEAPP_PROJECT_PATH` | 小程序项目路径（可选） |
@@ -231,11 +232,84 @@ npm run dev
 
 工具调用可以通过 `connection` 对象覆盖这些默认值中的大部分。
 
+### 连接模式说明
+
+#### 模式 A：连接已有 IDE（connect）
+
+适用于你已经手动打开微信开发者工具，并且已经在 **设置 → 安全设置 → 服务端口** 中开启了自动化。
+
+```json
+{
+  "mcpServers": {
+    "weapp-agent-mcp": {
+      "command": "npx",
+      "args": ["-y", "@chaixueyuan/weapp-agent-mcp"],
+      "env": {
+        "WEAPP_WS_ENDPOINT": "ws://localhost:9420"
+      }
+    }
+  }
+}
+```
+
+这个模式下：
+- `WEAPP_WS_ENDPOINT` 必须指向可被 `miniprogram-automator.connect()` 连接的 websocket endpoint
+- 不要把 IDE HTTP 端口误当成 websocket 端口
+- 不要再执行 `cli open`、`cli auto`、`cli quit`
+- 建议先调用 `mp_diagnoseConnection`，再调用 `mp_ensureConnection`
+- 如果连接失败，只返回诊断结果，不要自动切端口
+
+#### 模式 B：由 MCP 拉起 IDE（launch）
+
+适用于当前未打开 IDE，需要 MCP 通过 CLI 启动项目。
+
+```json
+{
+  "mcpServers": {
+    "weapp-agent-mcp": {
+      "command": "npx",
+      "args": ["-y", "@chaixueyuan/weapp-agent-mcp"],
+      "env": {
+        "WEAPP_AUTOMATOR_MODE": "launch",
+        "WEAPP_PROJECT_PATH": "/path/to/project",
+        "WECHAT_DEVTOOLS_CLI_PATH": "/Applications/wechatwebdevtools.app/Contents/MacOS/cli",
+        "WEAPP_DEVTOOLS_PORT": "9420"
+      }
+    }
+  }
+}
+```
+
+这个模式下：
+- `WEAPP_DEVTOOLS_PORT` 表示 `cli auto --auto-port` 使用的自动化端口
+- 只有在明确使用 `launch` 模式时，MCP 才应该启动 IDE
+- 如果检测到同项目已经有 IDE 实例在运行，应停止自动 launch 并返回诊断信息
+- `connect` 与 `launch` 两种模式不要混用
+
+#### `--port` 和 `--auto-port` 的区别
+
+微信开发者工具至少涉及两类端口：
+- `--port`：IDE HTTP 服务端口
+- `--auto-port`：自动化 websocket 端口
+
+这两个端口不能混用。`WEAPP_WS_ENDPOINT` 必须指向自动化 websocket 端口，而不是 IDE HTTP 端口。
+
+#### Codex / agent 使用规则
+
+当用户已经打开微信开发者工具时：
+1. 不要执行 `cli open`
+2. 不要执行 `cli auto`
+3. 不要执行 `cli quit`
+4. 先调用 `mp_diagnoseConnection`
+5. 再调用 `mp_ensureConnection`
+6. 如果连接失败，只返回诊断结果，不要自动切端口
+
 ## 可用工具
 
 ### 应用工具（Application Tools）
 
-- `mp_ensureConnection` – 确保自动化会话就绪；可选择强制重连或覆盖连接设置
+- `mp_diagnoseConnection` – 只诊断当前连接目标，不启动 IDE、不修改项目状态
+- `mp_ensureConnection` – 确保自动化会话就绪；建议先调用 `mp_diagnoseConnection`，再决定是否重连或覆盖连接设置
 - `mp_navigate` – 在小程序内导航，支持 `navigateTo`、`redirectTo`、`reLaunch`、`switchTab` 或 `navigateBack`
 - `mp_screenshot` – 捕获屏幕截图并返回（或保存到磁盘）
 - `mp_callWx` – 调用微信小程序 API 方法（如 `wx.showToast`）
@@ -292,7 +366,7 @@ npm run dev
 ### 一般提示
 
 - 连接前，在微信开发者工具中启用自动化（`设置 → 安全设置 → 服务端口`）
-- 推荐首先调用 `mp_ensureConnection` 来验证连接并查看系统/页面详情
+- 推荐先调用 `mp_diagnoseConnection`，再调用 `mp_ensureConnection` 来验证连接并查看系统/页面详情
 - 使用 `WEAPP_AUTOCLOSE=true` 适合无状态的一次性交互
 - **导航时始终使用绝对路径**（以 `/` 开头）：`/pages/mine/mine`
 - tabBar 页面使用 `switchTab`，普通页面使用 `navigateTo`
@@ -335,14 +409,13 @@ npm run dev
 
 ### 自动启动功能（AutoLaunch）
 
-当配置 `WEAPP_AUTOLAUNCH=true` 时，MCP 服务器可以自动检测并启动微信开发者工具：
+`WEAPP_AUTOLAUNCH=true` 现在只应理解为 **显式 `launch` 配置下的启动辅助开关**，不是 `connect` 失败后的兜底恢复策略。
 
-1. **自动检测端口**：检测 9420 端口是否有服务运行
-2. **无服务则启动**：如果端口未占用，自动调用 CLI 启动开发者工具
-3. **项目选择**：
-   - 如果有默认项目配置，自动使用
-   - 如果没有默认项目，自动列出最近项目供选择
-   - 支持输入项目编号（如 `1`）或完整路径
+当前安全策略是：
+1. 如果用户已经手动打开 IDE，应优先使用 `connect`
+2. `connect` 失败时先诊断，不自动切模式、不自动切端口
+3. 只有明确进入 `launch` 模式时，MCP 才尝试启动 IDE
+4. 如果检测到 DevTools 已在运行，会优先阻止重复拉起
 
 #### 配置示例
 

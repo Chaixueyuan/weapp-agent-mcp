@@ -176,6 +176,7 @@ export function createApplicationTools(
   manager: WeappAutomatorManager
 ): AnyTool[] {
   return [
+    createDiagnoseConnectionTool(manager),
     createEnsureConnectionTool(manager),
     createHealthCheckTool(manager),
     createRecoverConnectionTool(manager),
@@ -192,11 +193,29 @@ export function createApplicationTools(
   ];
 }
 
+function createDiagnoseConnectionTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_diagnoseConnection",
+    description:
+      "只诊断当前小程序连接目标，不启动 IDE、不修改项目状态。建议在 mp_ensureConnection 前先调用。",
+    parameters: connectionContainerSchema,
+    execute: async (rawArgs, _context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = connectionContainerSchema.parse(rawArgs ?? {});
+        const diagnosis = await manager.diagnoseConnection(args.connection, {
+          strictMode: false,
+        });
+        return toTextResult(formatJson(diagnosis));
+      }),
+    timeoutMs: 15000,
+  };
+}
+
 function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_ensureConnection",
     description:
-      "检查小程序自动化会话是否就绪。先调用这个工具，再调用 mp_screenshot、page_* 或 element_* 工具。若失败，优先用 reconnect=true 重试一次；若返回项目选择提示，则传 projectSelection。",
+      "检查小程序自动化会话是否就绪。建议先调用 mp_diagnoseConnection，再调用本工具。若失败，优先根据诊断结果处理；若返回项目选择提示，则传 projectSelection。",
     parameters: ensureConnectionParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -229,6 +248,9 @@ function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
           } catch {
             systemInfo = null;
           }
+          const diagnosis = await manager.diagnoseConnection(args.connection, {
+            strictMode: false,
+          });
 
           return toTextResult(
             formatJson({
@@ -237,6 +259,14 @@ function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
               wsEndpoint: config.wsEndpoint,
               port: config.port,
               autoClose: config.autoClose ?? false,
+              diagnosis: {
+                target: diagnosis.target,
+                portListening: diagnosis.portListening,
+                websocketReachable: diagnosis.websocketReachable,
+                looksLikeIdeHttp: diagnosis.looksLikeIdeHttp,
+                safeToLaunch: diagnosis.safeToLaunch,
+                suggestion: diagnosis.suggestion,
+              },
               currentPage: page
                 ? { path: page.path, query: page.query }
                 : null,

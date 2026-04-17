@@ -1,6 +1,8 @@
 import { UserError, type SerializableValue } from "fastmcp";
 import automator from "miniprogram-automator";
 import net from "net";
+import * as http from "node:http";
+import * as https from "node:https";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -52,6 +54,34 @@ export interface ConnectionSnapshot {
   wsEndpoint: string | null;
   port: number | null;
   sessionId: string | null;
+}
+
+export interface ConnectionDiagnosis {
+  mode: "launch" | "connect";
+  target: string | null;
+  wsEndpoint: string | null;
+  port: number | null;
+  launchPort: number | null;
+  projectPath: string | null;
+  portListening: boolean;
+  tcpReachable: boolean;
+  websocketReachable: boolean;
+  httpProbe: string | null;
+  looksLikeIdeHttp: boolean;
+  looksLikeAutomatorWs: boolean;
+  ideProcessDetected: boolean;
+  projectConfigured: boolean;
+  safeToLaunch: boolean;
+  reasonCode: string | null;
+  suggestion: string;
+  allowAutoLaunch: boolean;
+}
+
+interface HttpProbeResult {
+  ok: boolean;
+  statusCode: number | null;
+  bodySnippet: string | null;
+  error: string | null;
 }
 
 interface PersistedState {
@@ -390,6 +420,145 @@ export class WeappAutomatorManager {
     }
   }
 
+  async diagnoseConnection(
+    overrides?: ConnectionOverrides,
+    options?: { strictMode?: boolean }
+  ): Promise<ConnectionDiagnosis> {
+    let config: WeappConnectionConfig;
+    try {
+      config = resolveConfig(overrides, this.config, {
+        allowIncompleteConnect: options?.strictMode !== true,
+        allowIncompleteLaunch: options?.strictMode !== true,
+      });
+    } catch (error) {
+      if (error instanceof ConfigError) {
+        return {
+          mode: overrides?.mode === "connect" ? "connect" : "launch",
+          target: overrides?.wsEndpoint ?? null,
+          wsEndpoint: overrides?.wsEndpoint ?? null,
+          port: this.getConfiguredPortFromOverrides(overrides),
+          launchPort: this.getLaunchPortFromOverrides(overrides),
+          projectPath: overrides?.projectPath ?? null,
+          portListening: false,
+          tcpReachable: false,
+          websocketReachable: false,
+          httpProbe: null,
+          looksLikeIdeHttp: false,
+          looksLikeAutomatorWs: false,
+          ideProcessDetected: await this.isDevToolsProcessRunning(),
+          projectConfigured: Boolean(overrides?.projectPath),
+          safeToLaunch: false,
+          reasonCode: "INVALID_CONNECTION_CONFIG",
+          suggestion: error.message,
+          allowAutoLaunch: false,
+        };
+      }
+      throw error;
+    }
+
+    const port = this.getConfiguredPort(config);
+    const launchPort = this.getLaunchPort(config);
+    const probeWsEndpoint = this.getProbeWsEndpoint(config);
+    const target = config.wsEndpoint ?? probeWsEndpoint ?? (launchPort ? `auto-port:${launchPort}` : null);
+    const [portListening, ideProcessDetected] = await Promise.all([
+      port ? this.isPortInUse(port) : Promise.resolve(false),
+      this.isDevToolsProcessRunning(),
+    ]);
+    const tcpReachable = portListening;
+    let websocketReachable = false;
+    let httpProbe: string | null = null;
+    let looksLikeIdeHttp = false;
+    let looksLikeAutomatorWs = false;
+    let reasonCode: string | null = null;
+    let suggestion = "当前目标可继续连接。";
+    let safeToLaunch = config.mode === "launch";
+    let allowAutoLaunch = config.mode === "launch";
+
+    if (probeWsEndpoint) {
+      const wsProbe = await this.probeWebSocketEndpoint(probeWsEndpoint, config.connectTimeout ?? 3000);
+      websocketReachable = wsProbe.ok;
+      looksLikeAutomatorWs = wsProbe.ok;
+      if (!wsProbe.ok) {
+        const httpResult = await this.probeHttpEndpoint(probeWsEndpoint, config.connectTimeout ?? 3000);
+        httpProbe = this.formatHttpProbe(httpResult);
+        looksLikeIdeHttp = this.looksLikeIdeHttpProbe(httpResult);
+      }
+    }
+
+    if (config.mode === "connect") {
+      safeToLaunch = false;
+      allowAutoLaunch = Boolean(config.autoLaunch && config.projectPath);
+
+      if (!config.wsEndpoint) {
+        reasonCode = "INVALID_WS_ENDPOINT";
+        suggestion = "connect 模式必须提供可连接的 websocket endpoint。请先确认自动化端口。";
+      } else if (!portListening) {
+        reasonCode = "PORT_NOT_LISTENING";
+        suggestion = allowAutoLaunch
+          ? "目标端口未监听。请先确认自动化服务是否已启动；若确需由 MCP 拉起，请显式提供项目路径并确认 launch 策略。"
+          : "目标端口未监听。请不要自动切端口，先确认微信开发者工具已开启自动化。";
+      } else if (looksLikeIdeHttp) {
+        reasonCode = "IDE_HTTP_PORT_NOT_WS";
+        suggestion = "当前端口看起来是 IDE HTTP 服务端口，不是自动化 websocket 端口。请不要重复启动 IDE，请确认自动化端口或重新开启自动化。";
+        allowAutoLaunch = false;
+      } else if (!websocketReachable) {
+        reasonCode = "AUTOMATION_NOT_ENABLED";
+        suggestion = "端口已监听，但 websocket 握手失败。请检查微信开发者工具是否已开启自动化测试。";
+        allowAutoLaunch = false;
+      } else {
+        suggestion = "当前 websocket 目标可连接，可继续执行 mp_ensureConnection。";
+      }
+    } else {
+      safeToLaunch = !looksLikeIdeHttp;
+      allowAutoLaunch = safeToLaunch;
+
+      if (!config.projectPath) {
+        reasonCode = "PROJECT_NOT_OPENED";
+        suggestion = "launch 模式必须提供项目路径，或先通过项目选择流程确定目标项目。";
+        safeToLaunch = false;
+        allowAutoLaunch = false;
+      } else if (ideProcessDetected && websocketReachable) {
+        reasonCode = "IDE_ALREADY_RUNNING";
+        suggestion = "检测到微信开发者工具已经在运行，且当前自动化 websocket 已可达。为避免重复拉起导致 IDE 状态异常，已阻止 launch。请改用 connect 模式。";
+        safeToLaunch = false;
+        allowAutoLaunch = false;
+      } else if (ideProcessDetected && looksLikeIdeHttp) {
+        reasonCode = "IDE_ALREADY_RUNNING";
+        suggestion = "检测到微信开发者工具已经在运行，且当前端口更像 IDE HTTP 服务。为避免重复拉起导致 IDE 状态异常，已阻止 launch。请改用 connect 模式或先手动关闭现有 IDE。";
+        safeToLaunch = false;
+        allowAutoLaunch = false;
+      } else if (ideProcessDetected) {
+        reasonCode = "LAUNCH_MODE_BLOCKED";
+        suggestion = "检测到微信开发者工具进程已经在运行。为避免重复拉起新的 IDE，已停止 launch。请先确认现有 IDE 的自动化状态，必要时改用 connect 模式。";
+        safeToLaunch = false;
+        allowAutoLaunch = false;
+      } else {
+        suggestion = "当前未发现明显的重复启动风险；如需建立会话，可继续执行 mp_ensureConnection。";
+      }
+    }
+
+    return {
+      mode: config.mode,
+      target,
+      wsEndpoint: config.wsEndpoint ?? null,
+      port,
+      launchPort,
+      projectPath: config.projectPath ?? null,
+      portListening,
+      tcpReachable,
+      websocketReachable,
+      httpProbe,
+      looksLikeIdeHttp,
+      looksLikeAutomatorWs,
+      ideProcessDetected,
+      projectConfigured: Boolean(config.projectPath),
+      safeToLaunch,
+      reasonCode,
+      suggestion,
+      allowAutoLaunch,
+    };
+  }
+
   async withMiniProgram<T>(
     log: ToolLogger,
     options: UseOptions,
@@ -399,38 +568,57 @@ export class WeappAutomatorManager {
     ) => Promise<T>
   ): Promise<T> {
     const { overrides, reconnect } = options;
-    let config: WeappConnectionConfig;
+    let effectiveOverrides: ConnectionOverrides = {
+      args: overrides?.args,
+      ...overrides,
+    };
+    let config = resolveConfig(effectiveOverrides, this.config, {
+      allowIncompleteConnect: true,
+      allowIncompleteLaunch: true,
+    });
+
+    const diagnosis = await this.diagnoseConnection(effectiveOverrides, { strictMode: false });
+    if (diagnosis.reasonCode === "PROJECT_NOT_OPENED" && config.mode === "launch") {
+      const defaultProject = await this.getDefaultProject();
+      if (defaultProject) {
+        log.info(`使用默认项目: ${defaultProject}`);
+        effectiveOverrides = {
+          ...effectiveOverrides,
+          projectPath: defaultProject,
+        };
+        config = resolveConfig(effectiveOverrides, this.config, {
+          allowIncompleteConnect: true,
+        });
+      } else {
+        const projects = await this.listRecentProjects();
+        if (projects.length === 1) {
+          const [onlyProject] = projects;
+          await this.saveProjectPath(onlyProject.path);
+          log.info(`使用唯一项目: ${onlyProject.path}`);
+          effectiveOverrides = {
+            ...effectiveOverrides,
+            projectPath: onlyProject.path,
+          };
+          config = resolveConfig(effectiveOverrides, this.config, {
+            allowIncompleteConnect: true,
+          });
+        } else {
+          await this.setPendingProjects(projects);
+          const response = this.formatProjectSelectionResponse(projects, defaultProject);
+          throw new UserError(this.withRecoveryTag("PROJECT_SELECTION_REQUIRED", response));
+        }
+      }
+    } else if (diagnosis.reasonCode) {
+      throw new UserError(formatDiagnosisError(diagnosis));
+    }
+
     try {
-      config = resolveConfig(overrides, this.config);
+      config = resolveConfig(effectiveOverrides, this.config);
     } catch (error) {
       if (error instanceof ConfigError) {
         throw new UserError(this.withRecoveryTag("INVALID_CONNECTION_CONFIG", error.message));
       }
       throw error;
-    }
-
-    if (config.autoLaunch && config.mode === "connect" && !config.projectPath) {
-      const isPortOpen = await this.isPortInUse(this.getConfiguredPort(config));
-
-      if (!isPortOpen) {
-        const defaultProject = await this.getDefaultProject();
-        if (defaultProject) {
-          log.info(`使用默认项目: ${defaultProject}`);
-          config.projectPath = defaultProject;
-        } else {
-          const projects = await this.listRecentProjects();
-          if (projects.length === 1) {
-            const [onlyProject] = projects;
-            await this.saveProjectPath(onlyProject.path);
-            log.info(`使用唯一项目: ${onlyProject.path}`);
-            config.projectPath = onlyProject.path;
-          } else {
-            await this.setPendingProjects(projects);
-            const response = this.formatProjectSelectionResponse(projects, defaultProject);
-            throw new UserError(this.withRecoveryTag("PROJECT_SELECTION_REQUIRED", response));
-          }
-        }
-      }
     }
 
     if (reconnect) {
@@ -450,49 +638,9 @@ export class WeappAutomatorManager {
       });
       try {
         if (config.mode === "connect") {
-          let needNewConnection = true;
-          
-          if (config.autoLaunch) {
-            const isPortOpen = await this.isPortInUse(this.getConfiguredPort(config));
-            
-            if (isPortOpen) {
-              log.info("DevTools is already running, connecting directly...");
-              
-              const isAlive = await this.isConnectionAlive();
-              const canReuse = this.miniProgram && this.config && isSameConfig(this.config, config) && isAlive;
-              
-              if (canReuse) {
-                log.info("Reusing existing connection");
-                needNewConnection = false;
-              }
-            } else {
-              log.info("DevTools not detected, auto launching...");
-              
-              let projectPath = config.projectPath || process.cwd();
-              const isValidProject = await this.isValidWeappProject(projectPath);
-              
-              if (!isValidProject) {
-                projectPath = "";
-                log.info("Current directory is not a valid weapp project, will open project selector...");
-              }
-              
-              const resolvedConfig = {
-                ...config,
-                projectPath: projectPath || undefined,
-              };
-              await this.launchDevTools(resolvedConfig, log);
-              
-              const launchTimeout = config.launchTimeout ?? 45000;
-              log.info(`Waiting ${launchTimeout}ms for DevTools to be ready...`);
-              await new Promise(resolve => setTimeout(resolve, launchTimeout));
-            }
-          }
-          
-          if (needNewConnection) {
-            const timeoutMs = config.connectTimeout ?? 45000;
-            log.info(`Connecting with ${timeoutMs}ms timeout...`);
-            this.miniProgram = await this.connectWithTimeout(config, timeoutMs);
-          }
+          const timeoutMs = config.connectTimeout ?? 45000;
+          log.info(`Connecting with ${timeoutMs}ms timeout...`);
+          this.miniProgram = await this.connectWithTimeout(config, timeoutMs);
         } else {
           this.miniProgram = await this.connect(config);
         }
@@ -506,6 +654,7 @@ export class WeappAutomatorManager {
         this.miniProgram = undefined;
         this.config = undefined;
         const message = error instanceof Error ? error.message : String(error);
+        const failureDiagnosis = await this.diagnoseConnection(overrides, { strictMode: false });
         throw new UserError(
           this.withRecoveryTag(
             config.mode === "connect"
@@ -513,7 +662,7 @@ export class WeappAutomatorManager {
               : "LAUNCH_MODE_FAILED",
             `Failed to ${
               config.mode === "connect" ? "connect to" : "launch"
-            } WeChat DevTools: ${message}\n\nNext step: retry mp_ensureConnection once with reconnect=true. If auto-launch is enabled and the project is ambiguous, call mp_listProjects or retry mp_ensureConnection with projectSelection.`
+            } WeChat DevTools: ${message}\n\n${formatDiagnosisDetails(failureDiagnosis)}\n\nNext step: retry mp_ensureConnection once with reconnect=true. If auto-launch is enabled and the project is ambiguous, call mp_listProjects or retry mp_ensureConnection with projectSelection.`
           )
         );
       }
@@ -635,48 +784,6 @@ export class WeappAutomatorManager {
     config: WeappConnectionConfig
   ): Promise<MiniProgramInstance> {
     if (config.mode === "connect") {
-      if (config.autoLaunch) {
-        const log = {
-          debug: (msg: string) => console.debug("[autoLaunch]", msg),
-          info: (msg: string) => console.info("[autoLaunch]", msg),
-          warn: (msg: string) => console.warn("[autoLaunch]", msg),
-          error: (msg: string) => console.error("[autoLaunch]", msg),
-        };
-
-        // 先检测端口是否有服务，避免重复启动
-        const isPortOpen = await this.isPortInUse(config.port ?? 9420);
-        
-        if (isPortOpen) {
-          log.info("DevTools is already running, connecting directly...");
-        } else {
-          log.info("DevTools not detected, auto launching...");
-          
-          // 解析项目路径：如果配置有就用配置的，否则用 cwd
-          let projectPath = config.projectPath || process.cwd();
-          
-          // 检查是否是有效的小程序项目目录
-          const isValidProject = await this.isValidWeappProject(projectPath);
-          
-          if (!isValidProject) {
-            // 如果不是有效项目目录，projectPath 设为 undefined
-            // 这样 CLI 会打开项目选择器让用户选择
-            projectPath = "";
-            log.info("Current directory is not a valid weapp project, will open project selector...");
-          }
-          
-          const resolvedConfig = {
-            ...config,
-            projectPath: projectPath || undefined,
-          };
-          await this.launchDevTools(resolvedConfig, log);
-          
-          const launchTimeout = config.launchTimeout ?? 30000;
-          log.info(`Waiting ${launchTimeout}ms for DevTools to be ready...`);
-          await new Promise(resolve => setTimeout(resolve, launchTimeout));
-        }
-        
-        log.info(`Connecting to websocket: ${config.wsEndpoint}`);
-      }
       return automator.connect({ wsEndpoint: config.wsEndpoint! });
     }
 
@@ -684,7 +791,7 @@ export class WeappAutomatorManager {
       cliPath: config.cliPath,
       projectPath: config.projectPath!,
       timeout: config.timeout,
-      port: config.port,
+      port: this.getLaunchPort(config),
       account: config.account,
       ticket: config.ticket,
       trustProject: config.trustProject,
@@ -695,6 +802,157 @@ export class WeappAutomatorManager {
 
   private withRecoveryTag(tag: string, message: string): string {
     return `[${tag}] ${message}`;
+  }
+
+  private async probeWebSocketEndpoint(
+    wsEndpoint: string,
+    timeoutMs: number
+  ): Promise<{ ok: boolean; error: string | null }> {
+    try {
+      await Promise.race([
+        automator.connect({ wsEndpoint }).then((miniProgram) => {
+          miniProgram.disconnect();
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error(`Connection timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+      return { ok: true, error: null };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async probeHttpEndpoint(
+    endpoint: string,
+    timeoutMs: number
+  ): Promise<HttpProbeResult> {
+    try {
+      const url = new URL(endpoint);
+      const client = url.protocol === "wss:" ? https : http;
+      const pathName = `${url.pathname || "/"}${url.search || ""}`;
+      const result = await new Promise<HttpProbeResult>((resolve) => {
+        const req = client.request(
+          {
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : undefined,
+            path: pathName,
+            method: "GET",
+            timeout: timeoutMs,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (chunk) => {
+              if (chunks.reduce((sum, item) => sum + item.length, 0) < 2048) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+              }
+            });
+            res.on("end", () => {
+              resolve({
+                ok: true,
+                statusCode: res.statusCode ?? null,
+                bodySnippet: Buffer.concat(chunks).toString("utf8").trim().slice(0, 200) || null,
+                error: null,
+              });
+            });
+          }
+        );
+        req.on("error", (error) => {
+          resolve({
+            ok: false,
+            statusCode: null,
+            bodySnippet: null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        req.on("timeout", () => {
+          req.destroy(new Error(`HTTP probe timeout after ${timeoutMs}ms`));
+        });
+        req.end();
+      });
+      return result;
+    } catch (error) {
+      return {
+        ok: false,
+        statusCode: null,
+        bodySnippet: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private formatHttpProbe(result: HttpProbeResult): string | null {
+    if (!result.ok) {
+      return result.error;
+    }
+    const status = result.statusCode ?? "unknown";
+    return result.bodySnippet ? `HTTP ${status}: ${result.bodySnippet}` : `HTTP ${status}`;
+  }
+
+  private looksLikeIdeHttpProbe(result: HttpProbeResult): boolean {
+    if (!result.ok) {
+      return false;
+    }
+    const body = result.bodySnippet?.toLowerCase() ?? "";
+    return body.includes("cannot get /") || body.includes("wechat") || body.includes("devtools");
+  }
+
+  private getProbeWsEndpoint(config: WeappConnectionConfig): string | undefined {
+    if (config.wsEndpoint) {
+      return config.wsEndpoint;
+    }
+    const launchPort = this.getLaunchPort(config);
+    if (!launchPort) {
+      return undefined;
+    }
+    return `ws://127.0.0.1:${launchPort}`;
+  }
+
+  private getLaunchPort(config: WeappConnectionConfig): number {
+    return typeof config.port === "number" ? config.port : 9420;
+  }
+
+  private getConfiguredPortFromOverrides(overrides?: ConnectionOverrides): number | null {
+    if (typeof overrides?.port === "number") {
+      return overrides.port;
+    }
+    if (overrides?.wsEndpoint) {
+      try {
+        const endpoint = new URL(overrides.wsEndpoint);
+        if (endpoint.port) {
+          return Number(endpoint.port);
+        }
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private getLaunchPortFromOverrides(overrides?: ConnectionOverrides): number | null {
+    return typeof overrides?.port === "number" ? overrides.port : null;
+  }
+
+  private async isDevToolsProcessRunning(): Promise<boolean> {
+    try {
+      const { execFile } = await import("node:child_process");
+      const command = process.platform === "win32" ? "tasklist" : "pgrep";
+      const args = process.platform === "win32" ? ["/FI", "IMAGENAME eq wechatwebdevtools.exe"] : ["-f", "wechatwebdevtools|微信开发者工具|cli.bat"];
+      return await new Promise<boolean>((resolve) => {
+        execFile(command, args, { timeout: 3000 }, (error, stdout) => {
+          if (process.platform === "win32") {
+            resolve(!error && stdout.toLowerCase().includes("wechatwebdevtools"));
+            return;
+          }
+          resolve(!error && stdout.trim().length > 0);
+        });
+      });
+    } catch {
+      return false;
+    }
   }
 
   private async isPortInUse(port: number): Promise<boolean> {
@@ -1150,14 +1408,18 @@ C. 直接输入项目路径`;
     const config = this.config;
     const projectPath = config?.projectPath || persisted.lastProjectPath || null;
     const wsEndpoint = config?.wsEndpoint || null;
-    const port = config ? this.getConfiguredPort(config) : null;
     const automatorConnected = await this.isConnectionAlive();
-    const portReachable = port ? await this.isPortInUse(port) : false;
-    const devtoolsOnline = automatorConnected || portReachable;
+    const diagnosis = config
+      ? await this.diagnoseConnection(toConnectionOverrides(config), { strictMode: false })
+      : null;
+    const port = diagnosis?.port ?? null;
+    const devtoolsOnline = Boolean(
+      automatorConnected || diagnosis?.portListening || diagnosis?.ideProcessDetected
+    );
 
     return {
       devtoolsOnline,
-      wsReachable: automatorConnected || portReachable,
+      wsReachable: Boolean(automatorConnected || diagnosis?.websocketReachable),
       automatorConnected,
       connectionMode: config?.mode || null,
       projectPath,
@@ -1285,6 +1547,54 @@ function toSerializable(value: unknown): SerializableValue {
     return Object.fromEntries(entries) as SerializableValue;
   }
   return String(value) as SerializableValue;
+}
+
+function toConnectionOverrides(config: WeappConnectionConfig): ConnectionOverrides {
+  return {
+    mode: config.mode,
+    cliPath: config.cliPath,
+    projectPath: config.projectPath,
+    wsEndpoint: config.wsEndpoint,
+    timeout: config.timeout,
+    port: config.port,
+    account: config.account,
+    ticket: config.ticket,
+    trustProject: config.trustProject,
+    args: config.args,
+    cwd: config.cwd,
+    autoClose: config.autoClose,
+    autoLaunch: config.autoLaunch,
+    launchTimeout: config.launchTimeout,
+    connectTimeout: config.connectTimeout,
+  };
+}
+
+function formatDiagnosisDetails(diagnosis: ConnectionDiagnosis): string {
+  return formatJson({
+    target: diagnosis.target,
+    mode: diagnosis.mode,
+    port: diagnosis.port,
+    launchPort: diagnosis.launchPort,
+    portListening: diagnosis.portListening,
+    websocketReachable: diagnosis.websocketReachable,
+    httpProbe: diagnosis.httpProbe,
+    looksLikeIdeHttp: diagnosis.looksLikeIdeHttp,
+    looksLikeAutomatorWs: diagnosis.looksLikeAutomatorWs,
+    ideProcessDetected: diagnosis.ideProcessDetected,
+    safeToLaunch: diagnosis.safeToLaunch,
+    allowAutoLaunch: diagnosis.allowAutoLaunch,
+    suggestion: diagnosis.suggestion,
+  });
+}
+
+function formatDiagnosisError(diagnosis: ConnectionDiagnosis): string {
+  const tag = diagnosis.reasonCode ?? "CONNECT_MODE_FAILED";
+  return `[${tag}] ${diagnosis.suggestion}\n\n${formatDiagnosisDetails(diagnosis)}`;
+}
+
+function formatJson(value: unknown): string {
+  const serialized = JSON.stringify(value, null, 2);
+  return serialized ?? String(value);
 }
 
 function isSameConfig(

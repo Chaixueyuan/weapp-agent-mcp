@@ -102,9 +102,15 @@ function fromPrevious(
   return base;
 }
 
+export interface ResolveConfigOptions {
+  allowIncompleteConnect?: boolean;
+  allowIncompleteLaunch?: boolean;
+}
+
 export function resolveConfig(
   overrides?: ConnectionOverrides,
-  previous?: WeappConnectionConfig
+  previous?: WeappConnectionConfig,
+  options?: ResolveConfigOptions
 ): WeappConnectionConfig {
   const envInput: ConnectionOverrides = connectionOverridesSchema.parse({
     mode: process.env.WEAPP_AUTOMATOR_MODE,
@@ -155,12 +161,12 @@ export function resolveConfig(
   };
 
   if (config.mode === "connect") {
-    if (!config.wsEndpoint) {
+    if (!config.wsEndpoint && !options?.allowIncompleteConnect) {
       throw new ConfigError(
         "WeChat DevTools websocket endpoint is required. Provide connection.wsEndpoint."
       );
     }
-  } else if (!config.projectPath) {
+  } else if (!config.projectPath && !options?.allowIncompleteLaunch) {
     throw new ConfigError(
       "Mini Program project path is required. Provide connection.projectPath."
     );
