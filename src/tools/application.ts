@@ -13,11 +13,13 @@ import {
   AnyTool,
   ToolContext,
   buildUrl,
+  clampJsonByBytes,
   connectionContainerSchema,
   createFunctionFromSource,
   ensureConnectionParameters,
   formatJson,
   parseSelectorWithIndex,
+  pickByPaths,
   querySchema,
   summarizeElement,
   toSerializableValue,
@@ -56,6 +58,18 @@ const callWxMethodParameters = connectionContainerSchema.extend({
 const evaluateParameters = connectionContainerSchema.extend({
   functionSource: z.string().trim().min(1),
   args: z.array(z.unknown()).optional(),
+  timeoutMs: z.coerce.number().int().positive().max(600000).optional(),
+});
+
+const pollUntilParameters = connectionContainerSchema.extend({
+  predicate: z.string().trim().min(1),
+  predicateArgs: z.array(z.unknown()).optional(),
+  action: z.string().trim().min(1).optional(),
+  actionArgs: z.array(z.unknown()).optional(),
+  pollIntervalMs: z.coerce.number().int().positive().optional().default(200),
+  timeoutMs: z.coerce.number().int().positive().max(600000).optional().default(15000),
+  snapshotPaths: z.array(z.string().trim().min(1)).optional(),
+  snapshotAfterMs: z.coerce.number().int().nonnegative().max(60000).optional().default(0),
 });
 
 const getConsoleLogsParameters = connectionContainerSchema.extend({
@@ -68,6 +82,8 @@ const getConsoleLogsParameters = connectionContainerSchema.extend({
 
 const currentPageParameters = connectionContainerSchema.extend({
   withData: z.coerce.boolean().optional().default(false),
+  dataPaths: z.array(z.string().trim().min(1)).optional(),
+  maxBytes: z.coerce.number().int().positive().optional(),
 });
 
 const healthCheckParameters = connectionContainerSchema.extend({
@@ -184,6 +200,7 @@ export function createApplicationTools(
     createScreenshotTool(manager),
     createCallWxMethodTool(manager),
     createEvaluateTool(manager),
+    createPollUntilTool(manager),
     createGetConsoleLogsTool(manager),
     createRunScenarioTool(manager),
     createGenerateScenarioReportTool(manager),
@@ -259,14 +276,7 @@ function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
               wsEndpoint: config.wsEndpoint,
               port: config.port,
               autoClose: config.autoClose ?? false,
-              diagnosis: {
-                target: diagnosis.target,
-                portListening: diagnosis.portListening,
-                websocketReachable: diagnosis.websocketReachable,
-                looksLikeIdeHttp: diagnosis.looksLikeIdeHttp,
-                safeToLaunch: diagnosis.safeToLaunch,
-                suggestion: diagnosis.suggestion,
-              },
+              diagnosis,
               currentPage: page
                 ? { path: page.path, query: page.query }
                 : null,
@@ -300,8 +310,15 @@ function createHealthCheckTool(manager: WeappAutomatorManager): AnyTool {
             const currentRoute = page?.path ?? null;
             const automatorConnected = connection.automatorConnected;
             const listenerAttached = logStatus?.listenerAttached ?? false;
+            const screenshotStatus = manager.getScreenshotStatus();
+            const screenshotEverRan = screenshotStatus.lastScreenshotAt !== null;
+            const screenshotRecentlyFailed =
+              screenshotEverRan && screenshotStatus.lastScreenshotOk === false;
             const ok = Boolean(connection.devtoolsOnline && connection.wsReachable && automatorConnected);
-            const needsRecovery = !ok || (args.includeLogs && !listenerAttached);
+            const needsRecovery =
+              !ok ||
+              (args.includeLogs && !listenerAttached) ||
+              screenshotRecentlyFailed;
             const summary = !ok
               ? "disconnected"
               : needsRecovery
@@ -326,10 +343,18 @@ function createHealthCheckTool(manager: WeappAutomatorManager): AnyTool {
                 logStoreMode: logStatus?.logStoreMode ?? null,
                 sessionId: logStatus?.sessionId ?? connection.sessionId,
                 sourceProjectPath: logStatus?.sourceProjectPath ?? null,
+                lastScreenshotAt: screenshotStatus.lastScreenshotAt,
+                lastScreenshotOk: screenshotStatus.lastScreenshotOk,
+                lastScreenshotErrorCode: screenshotStatus.lastScreenshotErrorCode,
                 checkedAt: Date.now(),
                 warnings: [
                   ...(args.includeLogs && !listenerAttached ? ["listener not attached"] : []),
                   ...(args.includePage && !currentRoute ? ["current route unavailable"] : []),
+                  ...(screenshotRecentlyFailed
+                    ? [
+                        `last mp_screenshot failed (code=${screenshotStatus.lastScreenshotErrorCode ?? "UNKNOWN"})`,
+                      ]
+                    : []),
                 ],
                 errors: [
                   ...(!connection.devtoolsOnline ? ["devtools offline"] : []),
@@ -449,11 +474,41 @@ function createNavigateTool(manager: WeappAutomatorManager): AnyTool {
   };
 }
 
+function classifyScreenshotError(error: unknown): {
+  code: "SCREENSHOT_TIMEOUT" | "SIMULATOR_HIDDEN" | "RENDERER_NOT_READY" | "UNKNOWN";
+  hint: string;
+} {
+  const raw = error instanceof Error ? error.message : String(error);
+  const msg = raw.toLowerCase();
+  if (msg.includes("[request_timeout]") || msg.includes("timeout") || msg.includes("超时")) {
+    return {
+      code: "SCREENSHOT_TIMEOUT",
+      hint: "截图超时。建议：1) 提高 timeoutMs（默认 30000，可调到 60000+）；2) 调 mp_healthCheck 看连接是否还活；3) 若 mp_healthCheck 全绿仍然超时，调 mp_recoverConnection 重连后重试。",
+    };
+  }
+  if (msg.includes("simulator") || msg.includes("模拟器") || msg.includes("hidden") || msg.includes("not visible")) {
+    return {
+      code: "SIMULATOR_HIDDEN",
+      hint: "模拟器窗口可能被隐藏 / 最小化 / 不在前台。建议：把开发者工具窗口聚焦到前台，确保模拟器面板可见后重试。",
+    };
+  }
+  if (msg.includes("renderer") || msg.includes("page") || msg.includes("loading") || msg.includes("页面") || msg.includes("正在加载")) {
+    return {
+      code: "RENDERER_NOT_READY",
+      hint: "渲染器尚未就绪。建议：先调 page_waitElement 等待关键元素出现，或加 page_waitTimeout 留出渲染时间后重试。",
+    };
+  }
+  return {
+    code: "UNKNOWN",
+    hint: "未匹配到已知失败模式。建议：1) 调 mp_healthCheck 看具体状态；2) 调 mp_recoverConnection 重连；3) 仍失败时，将本错误的完整 message 反馈给维护者。",
+  };
+}
+
 function createScreenshotTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_screenshot",
     description:
-      "截取当前小程序视口的截图。需要已有活动会话；若提示没有活动会话，请先调用 mp_ensureConnection。默认返回内联图片，或保存到文件路径。支持 timeoutMs；注意官方说明该能力仅支持开发者工具模拟器。",
+      "截取当前小程序视口的截图。需要已有活动会话；若提示没有活动会话，请先调用 mp_ensureConnection。默认返回内联图片，或保存到文件路径。支持 timeoutMs；注意官方说明该能力仅支持开发者工具模拟器。第一次失败时自动重试一次（间隔 1s）；连续失败时返回 reasonCode（SCREENSHOT_TIMEOUT / SIMULATOR_HIDDEN / RENDERER_NOT_READY / UNKNOWN）并附建议。",
     parameters: screenshotParameters,
     timeoutMs: 60000,
     execute: async (rawArgs, context: ToolContext) =>
@@ -476,26 +531,47 @@ function createScreenshotTool(manager: WeappAutomatorManager): AnyTool {
             projectPath: config.projectPath ?? null,
           });
 
-          let output: string | void;
-          try {
-            output = await manager.runSerializedScreenshot(
-              context.log,
-              () => manager.withRequestTimeout(
-                () => miniProgram.screenshot(args.path ? { path: args.path } : undefined),
-                {
-                  timeoutMs: args.timeoutMs,
-                  description: `执行页面截图（mode=${screenshotMode}）`,
-                }
-              )
-            );
-          } catch (error) {
-            if (error instanceof UserError) {
-              throw new UserError(
-                `${error.message}\n\n截图诊断：\n- 当前 route: ${currentPage?.path ?? "unknown"}\n- 截图模式: ${screenshotMode}\n- 输出路径: ${args.path ?? "<inline>"}\n- 工具超时: ${args.timeoutMs}ms\n- 官方说明：miniProgram.screenshot 仅支持开发者工具模拟器，客户端不可用。`
+          let output: string | void | undefined;
+          let attempts = 0;
+          let lastError: unknown = null;
+          let lastClassification: ReturnType<typeof classifyScreenshotError> | null = null;
+          while (attempts < 2) {
+            attempts++;
+            try {
+              output = await manager.runSerializedScreenshot(
+                context.log,
+                () => manager.withRequestTimeout(
+                  () => miniProgram.screenshot(args.path ? { path: args.path } : undefined),
+                  {
+                    timeoutMs: args.timeoutMs,
+                    description: `执行页面截图（mode=${screenshotMode}, attempt=${attempts}）`,
+                  }
+                )
               );
+              lastError = null;
+              break;
+            } catch (error) {
+              lastError = error;
+              lastClassification = classifyScreenshotError(error);
+              if (attempts < 2 && lastClassification.code !== "SIMULATOR_HIDDEN") {
+                context.log.warn(
+                  `mp_screenshot 第 ${attempts} 次失败 [${lastClassification.code}]，1s 后重试`
+                );
+                await new Promise((r) => setTimeout(r, 1000));
+              }
             }
-            throw error;
           }
+
+          if (lastError) {
+            const classification = lastClassification ?? classifyScreenshotError(lastError);
+            manager.recordScreenshotResult(false, classification.code);
+            const baseMsg = lastError instanceof Error ? lastError.message : String(lastError);
+            throw new UserError(
+              `[${classification.code}] ${baseMsg}\n\n截图诊断：\n- 当前 route: ${currentPage?.path ?? "unknown"}\n- 截图模式: ${screenshotMode}\n- 输出路径: ${args.path ?? "<inline>"}\n- 工具超时: ${args.timeoutMs}ms\n- 重试次数: ${attempts}\n- 建议: ${classification.hint}`
+            );
+          }
+
+          manager.recordScreenshotResult(true);
 
           if (typeof output === "string") {
             context.log.info("miniProgram.screenshot returned inline base64", {
@@ -517,12 +593,14 @@ function createScreenshotTool(manager: WeappAutomatorManager): AnyTool {
                 path: args.path,
                 route: currentPage?.path ?? null,
                 timeoutMs: args.timeoutMs,
+                attempts,
               })
             );
           }
 
+          manager.recordScreenshotResult(false, "EMPTY_OUTPUT");
           return toErrorResult(
-            "截图未产生图片数据。官方说明：miniProgram.screenshot 不传 path 时应返回 base64；若当前环境为客户端而非开发者工具模拟器，截图能力可能不可用。"
+            "[EMPTY_OUTPUT] 截图未产生图片数据。官方说明：miniProgram.screenshot 不传 path 时应返回 base64；若当前环境为客户端而非开发者工具模拟器，截图能力可能不可用。"
           );
         }
       );
@@ -533,7 +611,7 @@ function createScreenshotTool(manager: WeappAutomatorManager): AnyTool {
 function createCallWxMethodTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_callWx",
-    description: "调用微信小程序 API 方法，（如 `wx.pageScrollTo`）。",
+    description: "调用微信小程序 API 方法。method 参数**不要带 wx. 前缀**（内部自动拼），例如传 `pageScrollTo` 而不是 `wx.pageScrollTo`。",
     parameters: callWxMethodParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -563,13 +641,14 @@ function createCallWxMethodTool(manager: WeappAutomatorManager): AnyTool {
 function createEvaluateTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_evaluate",
-    description: "向小程序 AppService 注入并执行函数代码，返回执行结果。适合在 page.data 不稳定时做显式调试读取。",
+    description: "向小程序 AppService 注入并执行函数代码，返回执行结果。适合在 page.data 不稳定时做显式调试读取。可选 timeoutMs 覆盖默认 15s 超时（最长 600s），用于长耗时异步等待。注意：避免在函数体内遍历完整 prototype 链或做复杂反射，可能命中 SDK wrapper 抛 'Cannot read property is of undefined' 之类错误；保持函数体最小化。",
     parameters: evaluateParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
       const args = evaluateParameters.parse(rawArgs ?? {});
       const fn = createFunctionFromSource(args.functionSource, "functionSource");
       const callArgs = args.args ?? [];
+      const timeoutMs = args.timeoutMs ?? 15000;
 
       return manager.withMiniProgram<ContentResult>(
         context.log,
@@ -579,7 +658,7 @@ function createEvaluateTool(manager: WeappAutomatorManager): AnyTool {
           try {
             result = await manager.withRequestTimeout(
               () => miniProgram.evaluate(fn, ...callArgs),
-              { description: "执行小程序 evaluate" }
+              { description: "执行小程序 evaluate", timeoutMs }
             );
           } catch (error) {
             if (error instanceof UserError) {
@@ -593,12 +672,123 @@ function createEvaluateTool(manager: WeappAutomatorManager): AnyTool {
             formatJson({
               functionSource: args.functionSource,
               arguments: callArgs,
+              timeoutMs,
               result: toSerializableValue(result),
             })
           );
         }
       );
       }),
+    timeoutMs: 600000,
+  };
+}
+
+function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
+  return {
+    name: "mp_pollUntil",
+    description:
+      "轮询执行 predicate 直到返回真值，可选执行 action 并拍 before/after 快照。适合时序敏感测试（如等待打字机进入 displaying 状态后立刻打断）。predicate / action 是 function 源码字符串，跑在小程序 AppService 上下文（可用 getCurrentPages、wx 等）。轮询由 server 端管理，重连不会留下脏 setInterval。before 反映 predicate 命中时刻的 page.data（不是首次 poll 时刻）；after 反映 action 跑完且等待 snapshotAfterMs 后的状态。注意：若 timeoutMs 比单次 evaluate 还短，可能只跑 1 次 predicate 就超时。timeoutMs 上限 600s。",
+    parameters: pollUntilParameters,
+    execute: async (rawArgs, context: ToolContext) =>
+      withUserErrorResult(async () => {
+        const args = pollUntilParameters.parse(rawArgs ?? {});
+        const predicateFn = createFunctionFromSource(args.predicate, "predicate");
+        const actionFn = args.action
+          ? createFunctionFromSource(args.action, "action")
+          : null;
+        const predicateArgs = args.predicateArgs ?? [];
+        const actionArgs = args.actionArgs ?? [];
+        const interval = args.pollIntervalMs;
+        const overall = args.timeoutMs;
+
+        return manager.withMiniProgram<ContentResult>(
+          context.log,
+          { overrides: args.connection },
+          async (miniProgram) => {
+            const startedAt = Date.now();
+            let iterations = 0;
+            let lastValue: unknown = undefined;
+            let matched = false;
+            let lastError: string | null = null;
+
+            while (Date.now() - startedAt < overall) {
+              iterations++;
+              try {
+                lastValue = await manager.withRequestTimeout(
+                  () => miniProgram.evaluate(predicateFn, ...predicateArgs),
+                  { description: "执行 pollUntil predicate", timeoutMs: Math.min(overall, 15000) }
+                );
+                lastError = null;
+                if (lastValue) {
+                  matched = true;
+                  break;
+                }
+              } catch (error) {
+                lastError = error instanceof Error ? error.message : String(error);
+              }
+              const remaining = overall - (Date.now() - startedAt);
+              if (remaining <= 0) break;
+              await new Promise((r) => setTimeout(r, Math.min(interval, remaining)));
+            }
+
+            const elapsedMs = Date.now() - startedAt;
+            let before: Record<string, unknown> | undefined;
+            let after: Record<string, unknown> | undefined;
+            let actionRan = false;
+            let actionError: string | null = null;
+
+            const page = await miniProgram.currentPage().catch(() => null);
+
+            if (matched && args.snapshotPaths?.length && page) {
+              const data = await manager
+                .withRequestTimeout(() => page.data(), { description: "拍 before 快照" })
+                .catch(() => null);
+              before = pickByPaths(data, args.snapshotPaths).values;
+            }
+
+            if (matched && actionFn) {
+              try {
+                await manager.withRequestTimeout(
+                  () => miniProgram.evaluate(actionFn, ...actionArgs),
+                  { description: "执行 pollUntil action", timeoutMs: 15000 }
+                );
+                actionRan = true;
+              } catch (error) {
+                actionError = error instanceof Error ? error.message : String(error);
+              }
+            }
+
+            if (actionRan && args.snapshotAfterMs > 0) {
+              await new Promise((r) => setTimeout(r, args.snapshotAfterMs));
+            }
+
+            if (matched && actionRan && args.snapshotPaths?.length && page) {
+              const data = await manager
+                .withRequestTimeout(() => page.data(), { description: "拍 after 快照" })
+                .catch(() => null);
+              after = pickByPaths(data, args.snapshotPaths).values;
+            }
+
+            return toTextResult(
+              formatJson({
+                matched,
+                iterations,
+                elapsedMs,
+                pollIntervalMs: interval,
+                timeoutMs: overall,
+                finalPredicateValue: toSerializableValue(lastValue),
+                lastPredicateError: lastError,
+                actionRan,
+                actionError,
+                before: before ?? null,
+                after: after ?? null,
+                snapshotPaths: args.snapshotPaths ?? null,
+              })
+            );
+          }
+        );
+      }),
+    timeoutMs: 600000,
   };
 }
 
@@ -728,7 +918,7 @@ function createCurrentPageTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_currentPage",
     description:
-      "获取当前页面的信息，包括路径、查询参数、尺寸和滚动位置。通常在 mp_ensureConnection 成功后立即调用，用于确认当前页面。withData 为 true 时额外返回页面数据。",
+      "获取当前页面的信息（路径、查询参数、尺寸、滚动位置）。withData=true 额外返回 page.data。可选 dataPaths（如 ['conversationHistory.length','isSearching']）只取关键字段，避免大数组爆 token；可选 maxBytes 触发 JSON 截断并返回 truncated 标记。",
     parameters: currentPageParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -754,12 +944,36 @@ function createCurrentPageTool(manager: WeappAutomatorManager): AnyTool {
             scrollTop: toSerializableValue(scrollTop),
           };
 
-          if (args.withData) {
+          const wantData = args.withData || (args.dataPaths && args.dataPaths.length > 0);
+          if (wantData) {
             const data = await manager.withRequestTimeout(
               () => page.data(),
               { description: "读取当前页面数据" }
             ).catch(() => null);
-            result.data = toSerializableValue(data);
+
+            let dataPayload: unknown;
+            let missingPaths: string[] | null = null;
+            const isPicked = !!(args.dataPaths && args.dataPaths.length > 0);
+            if (isPicked) {
+              const picked = pickByPaths(data, args.dataPaths!);
+              dataPayload = picked.values;
+              missingPaths = picked.missing;
+            } else {
+              dataPayload = toSerializableValue(data);
+            }
+
+            const clamped = clampJsonByBytes(dataPayload, args.maxBytes);
+            result.data = clamped.value;
+            if (isPicked) {
+              result.pickedBytes = clamped.bytes;
+              result.dataPaths = args.dataPaths;
+              result.missingPaths = missingPaths;
+            } else {
+              result.dataBytes = clamped.bytes;
+            }
+            if (clamped.truncated) {
+              result.dataTruncated = true;
+            }
           }
 
           return toTextResult(formatJson(result));

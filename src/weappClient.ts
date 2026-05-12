@@ -109,6 +109,9 @@ export class WeappAutomatorManager {
   private lastListenerBindAt: number | null = null;
   private screenshotQueue: Promise<void> = Promise.resolve();
   private screenshotCooldownMs = 300;
+  private lastScreenshotAt: number | null = null;
+  private lastScreenshotOk: boolean | null = null;
+  private lastScreenshotErrorCode: string | null = null;
   
   private static readonly CONFIG_FILE = path.join(
     process.env.USERPROFILE || process.env.HOME || os.tmpdir(),
@@ -420,6 +423,24 @@ export class WeappAutomatorManager {
     }
   }
 
+  recordScreenshotResult(ok: boolean, errorCode?: string | null): void {
+    this.lastScreenshotAt = Date.now();
+    this.lastScreenshotOk = ok;
+    this.lastScreenshotErrorCode = ok ? null : errorCode ?? null;
+  }
+
+  getScreenshotStatus(): {
+    lastScreenshotAt: number | null;
+    lastScreenshotOk: boolean | null;
+    lastScreenshotErrorCode: string | null;
+  } {
+    return {
+      lastScreenshotAt: this.lastScreenshotAt,
+      lastScreenshotOk: this.lastScreenshotOk,
+      lastScreenshotErrorCode: this.lastScreenshotErrorCode,
+    };
+  }
+
   async diagnoseConnection(
     overrides?: ConnectionOverrides,
     options?: { strictMode?: boolean }
@@ -608,6 +629,76 @@ export class WeappAutomatorManager {
           throw new UserError(this.withRecoveryTag("PROJECT_SELECTION_REQUIRED", response));
         }
       }
+    } else if (
+      diagnosis.reasonCode === "PORT_NOT_LISTENING" &&
+      config.mode === "connect"
+    ) {
+      const targetPort = this.getConfiguredPort(config);
+      const endpointKind = classifyWsEndpoint(config.wsEndpoint);
+      if (endpointKind === "invalid") {
+        throw new UserError(
+          this.withRecoveryTag(
+            "PORT_NOT_LISTENING_INVALID_WS_ENDPOINT",
+            `配置的 wsEndpoint (${config.wsEndpoint}) 不是合法 URL，无法判断目标主机，server 不会自动 cli auto。请检查 wsEndpoint 配置。`
+          )
+        );
+      }
+      if (endpointKind === "remote") {
+        throw new UserError(
+          this.withRecoveryTag(
+            "PORT_NOT_LISTENING_REMOTE_ENDPOINT",
+            `配置的 wsEndpoint (${config.wsEndpoint}) 指向非本地主机，本地无法判断该端口是否监听，server 不会自动 cli auto。请在远端机器上确认 cli auto 已启动并暴露该端口，或将 wsEndpoint 改为本地地址。`
+          )
+        );
+      }
+      const resolved = await this.resolveAutoLaunchProjectPath(config);
+      if (!resolved) {
+        throw new UserError(
+          this.withRecoveryTag(
+            "PORT_NOT_LISTENING_AUTOLAUNCH_NO_PROJECT",
+            `自动化端口 ${targetPort} 未监听，且未能确定小程序项目路径。请在小程序项目根目录（含 project.config.json）下启动 MCP server，或通过环境变量 WEAPP_PROJECT_PATH / connection.projectPath 指定项目路径。`
+          )
+        );
+      }
+      const projectPath = resolved.path;
+      if (!(await this.isValidWeappProject(projectPath))) {
+        throw new UserError(
+          this.withRecoveryTag(
+            "PORT_NOT_LISTENING_INVALID_PROJECT",
+            `自动起端口失败：目录 ${projectPath} 不是有效的小程序项目（缺少 project.config.json 或 appid）。请在小程序项目根目录下启动 MCP server。`
+          )
+        );
+      }
+      log.info(
+        `自动化端口 ${targetPort} 未监听，使用 cli auto 自动启动 (project source=${resolved.source}): ${projectPath}`
+      );
+      const launchConfig: WeappConnectionConfig = {
+        ...config,
+        projectPath,
+        port: targetPort,
+      };
+      try {
+        await this.launchDevTools(launchConfig, log);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(
+          this.withRecoveryTag(
+            "PORT_NOT_LISTENING_AUTOLAUNCH_FAILED",
+            `自动启动 cli auto 失败：${message}。请手动运行：${this.getDefaultCliPath() ?? "cli"} auto --project ${projectPath} --auto-port ${targetPort}`
+          )
+        );
+      }
+      const portReady = await this.waitForPortListening(targetPort, 30000, log);
+      if (!portReady) {
+        throw new UserError(
+          this.withRecoveryTag(
+            "PORT_NOT_LISTENING_AUTOLAUNCH_TIMEOUT",
+            `已尝试 cli auto 启动，但 30 秒内端口 ${targetPort} 仍未监听。常见原因：cli 路径错误、微信开发者工具安全设置未开启 CLI/HTTP 调用、或项目路径无效。请手动验证：${this.getDefaultCliPath() ?? "cli"} auto --project ${projectPath} --auto-port ${targetPort}`
+          )
+        );
+      }
+      log.info(`端口 ${targetPort} 已监听，继续 connect (project source=${resolved.source})`);
+      void this.saveProjectPath(projectPath).catch(() => {});
     } else if (diagnosis.reasonCode) {
       throw new UserError(formatDiagnosisError(diagnosis));
     }
@@ -956,19 +1047,31 @@ export class WeappAutomatorManager {
   }
 
   private async isPortInUse(port: number): Promise<boolean> {
+    // Detect by attempting an outbound TCP connection. The previous approach
+    // (server.listen(port, "127.0.0.1")) silently succeeded on macOS even when
+    // an IPv6 wildcard listener (*:9420 / [::]:9420) already held the port,
+    // because IPv4-specific listen() and IPv6 wildcard listen() don't always
+    // conflict. Treating "listen() succeeded" as "port free" returned false
+    // negatives, so waitForPortListening burned its budget against a port that
+    // was actually open. A successful connect is the only reliable signal.
     return new Promise((resolve) => {
-      const server = new net.Server();
-      
-      server.once("error", () => {
-        resolve(true);
+      let done = false;
+      const finish = (result: boolean) => {
+        if (done) return;
+        done = true;
+        sock.destroy();
+        resolve(result);
+      };
+      const sock = net.createConnection({ port, host: "127.0.0.1" });
+      const timer = setTimeout(() => finish(false), 800);
+      sock.once("connect", () => {
+        clearTimeout(timer);
+        finish(true);
       });
-      
-      server.once("listening", () => {
-        server.close();
-        resolve(false);
+      sock.once("error", () => {
+        clearTimeout(timer);
+        finish(false);
       });
-      
-      server.listen(port, "127.0.0.1");
     });
   }
 
@@ -1323,8 +1426,47 @@ C. 直接输入项目路径`;
     return undefined;
   }
 
+  private async resolveAutoLaunchProjectPath(
+    config: WeappConnectionConfig
+  ): Promise<{ path: string; source: "config" | "persisted" | "cwd" } | null> {
+    if (config.projectPath) {
+      return { path: config.projectPath, source: "config" };
+    }
+    const persisted = await this.getDefaultProject();
+    if (persisted) {
+      return { path: persisted, source: "persisted" };
+    }
+    const cwd = process.cwd();
+    if (await this.isValidWeappProject(cwd)) {
+      return { path: cwd, source: "cwd" };
+    }
+    return null;
+  }
+
+  private async waitForPortListening(
+    port: number,
+    timeoutMs: number,
+    log?: { info: (msg: string) => void }
+  ): Promise<boolean> {
+    const startedAt = Date.now();
+    let halfwayLogged = false;
+    while (Date.now() - startedAt < timeoutMs) {
+      if (await this.isPortInUse(port)) {
+        return true;
+      }
+      const elapsed = Date.now() - startedAt;
+      if (!halfwayLogged && elapsed >= timeoutMs / 2) {
+        halfwayLogged = true;
+        log?.info(
+          `still waiting for port ${port} to listen (${Math.round(elapsed / 1000)}s elapsed of ${Math.round(timeoutMs / 1000)}s budget)`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    return false;
+  }
+
   private async launchDevTools(config: WeappConnectionConfig, log: { info: (msg: string) => void; warn: (msg: string) => void }): Promise<void> {
-    // 使用配置的 cliPath 或平台默认路径
     const cliPath = config.cliPath || this.getDefaultCliPath();
     if (!cliPath) {
       throw new Error("cliPath not configured and no default path for this platform, cannot auto launch DevTools");
@@ -1333,7 +1475,6 @@ C. 直接输入项目路径`;
       throw new Error("projectPath not configured, cannot auto launch DevTools");
     }
 
-    // 验证 CLI 路径是否存在且可执行
     try {
       await fs.promises.access(cliPath, fs.constants.X_OK);
     } catch {
@@ -1341,21 +1482,22 @@ C. 直接输入项目路径`;
     }
 
     const { spawn } = await import("child_process");
-    
-    // Windows 上执行 bat 文件需要用 cmd /c
+
     const isWindows = process.platform === "win32";
-    const isMac = process.platform === "darwin";
-    // auto 命令使用 --auto-port 指定自动化端口
+    // --auto-port is an undocumented flag (cli --help omits it) but the official
+    // miniprogram-automator SDK uses exactly this form in Launcher.js. Without
+    // it, IDE picks a random HTTP port and the websocket automation port we
+    // expect at config.port is never opened.
+    const autoPort = String(config.port ?? 9420);
     const autoArgs = [
       "auto",
       "--project", config.projectPath,
-      "--auto-port", String(config.port ?? 9420),
+      "--auto-port", autoPort,
     ];
-    
+
     if (config.account) {
       autoArgs.push("--auto-account", config.account);
-    }
-    if (config.ticket) {
+    } else if (config.ticket) {
       autoArgs.push("--ticket", config.ticket);
     }
     if (config.trustProject) {
@@ -1364,27 +1506,20 @@ C. 直接输入项目路径`;
     if (config.args) {
       autoArgs.push(...config.args);
     }
-    
-    // 根据平台选择执行方式
+
     let command: string;
     let commandArgs: string[];
-    
     if (isWindows) {
-      // Windows: 使用 cmd /c 执行 bat 文件
       command = "cmd.exe";
       commandArgs = ["/c", cliPath, ...autoArgs];
-    } else if (isMac) {
-      command = cliPath;
-      commandArgs = autoArgs;
     } else {
-      // 其他 POSIX 系统: 直接执行 CLI
       command = cliPath;
       commandArgs = autoArgs;
     }
-    
+
     const logCommand = `${cliPath} ${autoArgs.join(" ")}`;
     log.info(`Launching: ${logCommand}`);
-    
+
     const proc = spawn(command, commandArgs, {
       cwd: config.cwd,
       detached: true,
@@ -1392,14 +1527,63 @@ C. 直接输入项目路径`;
       shell: false,
       windowsHide: true,
     });
-    
-    // 监听错误事件以便调试
-    proc.on("error", (err) => {
-      log.warn(`Failed to launch DevTools: ${err.message}`);
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    const capCap = 8192;
+    const totalBytes = (chunks: Buffer[]): number =>
+      chunks.reduce((sum, c) => sum + c.length, 0);
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      if (totalBytes(stdoutChunks) < capCap) stdoutChunks.push(chunk);
     });
-    
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      if (totalBytes(stderrChunks) < capCap) stderrChunks.push(chunk);
+    });
+
+    let earlyExitCode: number | null = null;
+    let earlyExitSignal: NodeJS.Signals | null = null;
+    let exited = false;
+    proc.on("exit", (code, signal) => {
+      exited = true;
+      earlyExitCode = code;
+      earlyExitSignal = signal;
+    });
+    proc.on("error", (err) => {
+      log.warn(`Failed to spawn DevTools cli: ${err.message}`);
+    });
+
     proc.unref();
-    
+
+    // Watch a short window. If cli exits non-zero in this window, surface the
+    // stderr immediately so the caller doesn't sit through 30s of port polling.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+    const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+
+    if (exited && earlyExitCode !== 0) {
+      const reason =
+        earlyExitSignal != null
+          ? `signal ${earlyExitSignal}`
+          : `exit code ${earlyExitCode}`;
+      const detail = [
+        stderr ? `stderr: ${stderr.slice(0, 1000)}` : null,
+        stdout ? `stdout: ${stdout.slice(0, 1000)}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      throw new Error(
+        `cli auto failed (${reason}). command: ${logCommand}${detail ? "\n" + detail : ""}`
+      );
+    }
+
+    if (stderr) {
+      log.warn(`cli stderr: ${stderr.slice(0, 500)}`);
+    }
+    if (stdout) {
+      log.info(`cli stdout: ${stdout.slice(0, 500)}`);
+    }
+
     log.info(`DevTools launched with PID: ${proc.pid}`);
   }
 
@@ -1590,6 +1774,24 @@ function formatDiagnosisDetails(diagnosis: ConnectionDiagnosis): string {
 function formatDiagnosisError(diagnosis: ConnectionDiagnosis): string {
   const tag = diagnosis.reasonCode ?? "CONNECT_MODE_FAILED";
   return `[${tag}] ${diagnosis.suggestion}\n\n${formatDiagnosisDetails(diagnosis)}`;
+}
+
+function classifyWsEndpoint(
+  endpoint: string | undefined
+): "local" | "remote" | "invalid" {
+  if (!endpoint) {
+    return "local";
+  }
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname.toLowerCase();
+  } catch {
+    return "invalid";
+  }
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    return "local";
+  }
+  return "remote";
 }
 
 function formatJson(value: unknown): string {

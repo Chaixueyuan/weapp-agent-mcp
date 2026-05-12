@@ -2,6 +2,101 @@
 
 本文件记录当前 `weapp-agent-mcp` 近期完成的关键改动，重点面向后续交接与维护，而不是面向发布营销文案。项目来源于上游 `weapp-dev-mcp` / `@yfme/weapp-dev-mcp`，当前以独立发布为目标继续演进。
 
+## 2026-05-12（0.4.0）
+
+### 1. 端口未监听时自动 cli auto 起 IDE（核心痛点修复）
+
+说明：
+- `mp_ensureConnection` 在 `mode=connect` + `PORT_NOT_LISTENING` 时不再直接抛错；自动按 `config.projectPath → 持久化 lastProjectPath → process.cwd()`（前提是合法小程序项目）解析项目路径，调用 `cli auto --project <path> --auto-port <port>` 拉起 IDE
+- 远端 wsEndpoint（非 localhost / 127.0.0.1 / ::1）禁止本地 auto-launch，返回 `PORT_NOT_LISTENING_REMOTE_ENDPOINT`
+- 非法 wsEndpoint 返回 `PORT_NOT_LISTENING_INVALID_WS_ENDPOINT`
+- cli 子进程 stdout/stderr 接管 + 2s 窗口检 exit code，命令立即失败时不再傻等 30s
+- 端口轮询从 1s 间隔降到 300ms，等待中点 log 进度
+
+意义：
+- 用户不再需要手动开 IDE「服务端口」开关 / 不需要手动跑 cli auto
+- 错误信息从笼统的 "fail to connect" 变成明确的 `PORT_NOT_LISTENING_AUTOLAUNCH_*` tag 链
+
+### 2. 修复 `isPortInUse` 在 IPv6 wildcard 监听场景下误判（重要 bug）
+
+说明：
+- 旧实现用 `new Server().listen(port, "127.0.0.1")` 检测占用
+- IDE 实际监听 `*:9420`（IPv6 wildcard）+ macOS 上 IPv4 specific listen 不与之冲突 → listen 成功 → 误判端口空闲
+- 改成 `net.createConnection({ port, host: "127.0.0.1" })` 试连，能 connect 才算监听
+- 直接影响 `waitForPortListening` 不再 30s 永远等不到自己刚起的端口
+
+### 3. 修复 cli auto 命令丢失 `--auto-port` 参数
+
+说明：
+- 前一轮基于 `cli auto --help` 没列出 `--auto-port` 就误删了这个参数
+- 实测证明：官方 SDK `miniprogram-automator/out/Launcher.js` 自己一直用 `--auto-port`，是 undocumented flag
+- 不传时 cli 给 IDE HTTP 端口（默认 43720），不是 automation websocket 端口
+- 已恢复 `--auto-port` 参数；README 命令示例同步修正
+
+### 4. 新增工具 `mp_pollUntil`
+
+说明：
+- 轮询 predicate 直到返回真值，可选执行 action，并拍 before/after `page.data` 切片
+- predicate / action 是 function 源码字符串，跑在小程序 AppService 上下文
+- 轮询由 server 端管理；重连后不会留下脏 setInterval
+- 参数：`predicate` / `action` / `pollIntervalMs`（默认 200）/ `timeoutMs`（默认 15s，最长 600s）/ `snapshotPaths` / `snapshotAfterMs`
+- 适合替代手写 setInterval + clearInterval + 状态保存的时序敏感测试样板
+
+### 5. `mp_evaluate` 加 `timeoutMs` 参数
+
+说明：
+- 默认 15s 不变，可调到最长 600s（schema `.max(600000)` 硬约束）
+- 解决长耗时异步 evaluate 被默认 15s 硬砍的问题（如等待 typewriter 完成 4-12s）
+- 工具级 envelope timeout 拉到 600s，与内层 race 保持一致
+
+### 6. `mp_currentPage` 加 `dataPaths` / `maxBytes` / `missingPaths`
+
+说明：
+- `dataPaths: ['list.length', 'isSearching']` 只回这些字段，避免 page.data 大数组爆 token
+- `maxBytes` 触发 JSON 截断 + 返回 `dataTruncated: true` + `dataBytes`
+- 未命中路径列在 `missingPaths` 数组里，方便调试字段名拼写 / 字段是否还存在
+
+### 7. `mp_screenshot` 加 reasonCode + 自动一次重试
+
+说明：
+- 失败按 message 关键词分类：`SCREENSHOT_TIMEOUT` / `SIMULATOR_HIDDEN` / `RENDERER_NOT_READY` / `UNKNOWN` / `EMPTY_OUTPUT`
+- 除 `SIMULATOR_HIDDEN`（需用户聚焦窗口）外，第一次失败 1s 后自动重试一次
+- 错误信息附 reasonCode 对应的可执行建议
+- 截图状态记录到 manager（`lastScreenshotAt` / `lastScreenshotOk` / `lastScreenshotErrorCode`），下游可读
+
+### 8. `mp_healthCheck` 新增截图能力状态
+
+说明：
+- 返回 `lastScreenshotAt` / `lastScreenshotOk` / `lastScreenshotErrorCode` 三个字段
+- 最近一次 screenshot 失败时 `summary` 进入 `degraded`，并在 `warnings` 里说明 reasonCode
+- 解决"健康检查全绿但截图失败"的信号失真
+
+### 9. `mp_ensureConnection` 内嵌完整 diagnosis
+
+说明：
+- 之前内嵌的 5 字段半截 diagnosis 容易让 agent 误判
+- 改为直接嵌入完整诊断对象（11 字段，与 `mp_diagnoseConnection` 一致）
+
+### 10. 文案 / 行为细节修正
+
+- `mp_callWx` description 明确 `method` 不带 `wx.` 前缀（旧示例 "wx.pageScrollTo" 高频误导）
+- `mp_evaluate` description 加避免完整 prototype 反射的提示
+- `element_getData` 不传 `path` 时调 `element.data()` 不传参，返完整组件 data（旧实现传 `undefined` 命中 SDK 返 `{}` 的边界）
+- `element_getBoundingClientRect` 在 selector 命中但元素未渲染（display:none / 隐藏 popup）时返 `{ width:0, height:0, rendered:false, note:... }`，与 `element_getWxml` 行为一致；selector 真没匹配上才抛错
+- `page_snapshot` 在 `data` 对象为空时省略 `data` 键；未传 selectors/dataPaths/withData 时附 `hint` 说明
+- common helper `clampJsonByBytes` byte-accurate（用 Buffer 切字节，去尾不完整 utf8）；`getByPath` 加 `hasOwnProperty` 守卫避免走 prototype 链
+
+关键文件：
+- `src/weappClient.ts`（fallback、`isPortInUse`、launchDevTools、`waitForPortListening`、screenshot status）
+- `src/tools/application.ts`（mp_ensureConnection、mp_evaluate、mp_pollUntil、mp_currentPage、mp_screenshot、mp_healthCheck、mp_callWx）
+- `src/tools/element.ts`（element_getData、element_getBoundingClientRect）
+- `src/tools/page.ts`（page_snapshot）
+- `src/tools/common.ts`（getByPath、pickByPaths、clampJsonByBytes）
+- `src/index.ts`（server instructions 加自动 launch 说明）
+- `tests/diagnostics.test.ts` + `tests/path-helpers.test.ts`（23 用例，覆盖 fallback、远端 endpoint gate、path 取值、prototype 守卫、多字节截断）
+
+---
+
 ## 2026-04-15
 
 ### 1. 增强 `mp_screenshot` 超时、诊断与串行保护

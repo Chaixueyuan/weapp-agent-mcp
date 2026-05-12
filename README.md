@@ -198,8 +198,8 @@ npm run dev
 ```
 
 其中：
-- `--project` 参数指定小程序项目目录路径（请替换为实际的项目路径）
-- `--auto-port` 参数指定 WebSocket 服务端口（默认 9420）
+- `--project` 指定小程序项目目录路径（请替换为实际的项目路径）
+- `--auto-port` 指定 automation websocket 端口（默认 9420）。注意：这个 flag 在 `cli auto --help` 输出里看不到，但官方 `miniprogram-automator` SDK 内部一直用，是有效参数
 
 
 **⚠️ 警告**

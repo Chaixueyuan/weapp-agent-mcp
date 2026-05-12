@@ -131,7 +131,7 @@ test("diagnoseConnection keeps explicit connect target without port fallback", a
   }
 });
 
-test("withMiniProgram does not fall back from connect to launch", async () => {
+test("withMiniProgram auto-launches via cli auto when port is not listening", async () => {
   const manager = new WeappAutomatorManager();
   const originalPortInUse = (manager as any).isPortInUse;
   const originalProbeWs = (manager as any).probeWebSocketEndpoint;
@@ -139,6 +139,10 @@ test("withMiniProgram does not fall back from connect to launch", async () => {
   const originalProcess = (manager as any).isDevToolsProcessRunning;
   const originalConnectWithTimeout = (manager as any).connectWithTimeout;
   const originalConnect = (manager as any).connect;
+  const originalGetDefaultProject = (manager as any).getDefaultProject;
+  const originalIsValidProject = (manager as any).isValidWeappProject;
+  const originalLaunchDevTools = (manager as any).launchDevTools;
+  const originalWaitForPort = (manager as any).waitForPortListening;
 
   (manager as any).isPortInUse = async () => false;
   (manager as any).probeWebSocketEndpoint = async () => ({ ok: false, error: "ECONNREFUSED" });
@@ -150,11 +154,17 @@ test("withMiniProgram does not fall back from connect to launch", async () => {
   });
   (manager as any).isDevToolsProcessRunning = async () => false;
   (manager as any).connectWithTimeout = async () => {
-    throw new Error("should not reach connectWithTimeout when diagnosis already blocks");
+    throw new Error("should not reach connectWithTimeout in this test");
   };
   (manager as any).connect = async () => {
-    throw new Error("launch fallback should not happen");
+    throw new Error("must not fall back to SDK automator.launch");
   };
+  (manager as any).getDefaultProject = async () => null;
+  (manager as any).isValidWeappProject = async () => false;
+  (manager as any).launchDevTools = async () => {
+    throw new Error("launchDevTools must not run when project path cannot be resolved");
+  };
+  (manager as any).waitForPortListening = async () => false;
 
   try {
     await assert.rejects(
@@ -175,7 +185,9 @@ test("withMiniProgram does not fall back from connect to launch", async () => {
           },
           async () => null
         ),
-      (error: unknown) => error instanceof Error && error.message.includes("[PORT_NOT_LISTENING]")
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("[PORT_NOT_LISTENING_AUTOLAUNCH_NO_PROJECT]")
     );
   } finally {
     (manager as any).isPortInUse = originalPortInUse;
@@ -184,6 +196,154 @@ test("withMiniProgram does not fall back from connect to launch", async () => {
     (manager as any).isDevToolsProcessRunning = originalProcess;
     (manager as any).connectWithTimeout = originalConnectWithTimeout;
     (manager as any).connect = originalConnect;
+    (manager as any).getDefaultProject = originalGetDefaultProject;
+    (manager as any).isValidWeappProject = originalIsValidProject;
+    (manager as any).launchDevTools = originalLaunchDevTools;
+    (manager as any).waitForPortListening = originalWaitForPort;
+  }
+});
+
+test("withMiniProgram refuses to auto-launch when wsEndpoint points to a remote host", async () => {
+  const manager = new WeappAutomatorManager();
+  const originalPortInUse = (manager as any).isPortInUse;
+  const originalProbeWs = (manager as any).probeWebSocketEndpoint;
+  const originalProbeHttp = (manager as any).probeHttpEndpoint;
+  const originalProcess = (manager as any).isDevToolsProcessRunning;
+  const originalConnectWithTimeout = (manager as any).connectWithTimeout;
+  const originalConnect = (manager as any).connect;
+  const originalLaunchDevTools = (manager as any).launchDevTools;
+  const originalResolveAuto = (manager as any).resolveAutoLaunchProjectPath;
+
+  (manager as any).isPortInUse = async () => false;
+  (manager as any).probeWebSocketEndpoint = async () => ({ ok: false, error: "ECONNREFUSED" });
+  (manager as any).probeHttpEndpoint = async () => ({
+    ok: false,
+    statusCode: null,
+    bodySnippet: null,
+    error: "connect ECONNREFUSED",
+  });
+  (manager as any).isDevToolsProcessRunning = async () => false;
+  (manager as any).connectWithTimeout = async () => {
+    throw new Error("must not connect when remote endpoint refused auto-launch");
+  };
+  (manager as any).connect = async () => {
+    throw new Error("must not call connect()");
+  };
+  (manager as any).launchDevTools = async () => {
+    throw new Error("must not spawn cli auto for remote endpoint");
+  };
+  (manager as any).resolveAutoLaunchProjectPath = async () => {
+    throw new Error("must short-circuit before resolving project path");
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        manager.withMiniProgram(
+          {
+            debug: () => {},
+            info: () => {},
+            warn: () => {},
+            error: () => {},
+          },
+          {
+            overrides: {
+              mode: "connect",
+              wsEndpoint: "ws://10.0.0.5:9420",
+              args: undefined,
+            },
+          },
+          async () => null
+        ),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("[PORT_NOT_LISTENING_REMOTE_ENDPOINT]")
+    );
+  } finally {
+    (manager as any).isPortInUse = originalPortInUse;
+    (manager as any).probeWebSocketEndpoint = originalProbeWs;
+    (manager as any).probeHttpEndpoint = originalProbeHttp;
+    (manager as any).isDevToolsProcessRunning = originalProcess;
+    (manager as any).connectWithTimeout = originalConnectWithTimeout;
+    (manager as any).connect = originalConnect;
+    (manager as any).launchDevTools = originalLaunchDevTools;
+    (manager as any).resolveAutoLaunchProjectPath = originalResolveAuto;
+  }
+});
+
+test("withMiniProgram triggers cli auto and proceeds to connect when port becomes ready", async () => {
+  const manager = new WeappAutomatorManager();
+  const originalPortInUse = (manager as any).isPortInUse;
+  const originalProbeWs = (manager as any).probeWebSocketEndpoint;
+  const originalProbeHttp = (manager as any).probeHttpEndpoint;
+  const originalProcess = (manager as any).isDevToolsProcessRunning;
+  const originalConnectWithTimeout = (manager as any).connectWithTimeout;
+  const originalGetDefaultProject = (manager as any).getDefaultProject;
+  const originalIsValidProject = (manager as any).isValidWeappProject;
+  const originalLaunchDevTools = (manager as any).launchDevTools;
+  const originalWaitForPort = (manager as any).waitForPortListening;
+  const originalSaveProjectPath = (manager as any).saveProjectPath;
+  const originalAttachLogging = (manager as any).attachLogging;
+
+  let launchCalled = false;
+  (manager as any).isPortInUse = async () => false;
+  (manager as any).probeWebSocketEndpoint = async () => ({ ok: false, error: "ECONNREFUSED" });
+  (manager as any).probeHttpEndpoint = async () => ({
+    ok: false,
+    statusCode: null,
+    bodySnippet: null,
+    error: "connect ECONNREFUSED",
+  });
+  (manager as any).isDevToolsProcessRunning = async () => false;
+  (manager as any).getDefaultProject = async () => "/tmp/fake-mp";
+  (manager as any).isValidWeappProject = async () => true;
+  (manager as any).launchDevTools = async () => {
+    launchCalled = true;
+  };
+  (manager as any).waitForPortListening = async () => true;
+  (manager as any).saveProjectPath = async () => {};
+  (manager as any).attachLogging = () => {};
+  const fakeMiniProgram = {
+    on: () => {},
+    removeAllListeners: () => {},
+    disconnect: () => {},
+    close: async () => {},
+    currentPage: async () => null,
+  };
+  (manager as any).connectWithTimeout = async () => fakeMiniProgram;
+
+  try {
+    const result = await manager.withMiniProgram(
+      {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+      {
+        overrides: {
+          mode: "connect",
+          wsEndpoint: "ws://127.0.0.1:9420",
+          args: undefined,
+        },
+      },
+      async () => "ok"
+    );
+    assert.equal(result, "ok");
+    assert.equal(launchCalled, true);
+  } finally {
+    (manager as any).isPortInUse = originalPortInUse;
+    (manager as any).probeWebSocketEndpoint = originalProbeWs;
+    (manager as any).probeHttpEndpoint = originalProbeHttp;
+    (manager as any).isDevToolsProcessRunning = originalProcess;
+    (manager as any).connectWithTimeout = originalConnectWithTimeout;
+    (manager as any).getDefaultProject = originalGetDefaultProject;
+    (manager as any).isValidWeappProject = originalIsValidProject;
+    (manager as any).launchDevTools = originalLaunchDevTools;
+    (manager as any).waitForPortListening = originalWaitForPort;
+    (manager as any).saveProjectPath = originalSaveProjectPath;
+    (manager as any).attachLogging = originalAttachLogging;
+    await manager.close();
   }
 });
 

@@ -655,16 +655,21 @@ function createPageSnapshotTool(manager: WeappAutomatorManager): AnyTool {
               }
             }
 
-            return toTextResult(
-              formatJson({
-                route: page.path,
-                query: toSerializableValue(page.query ?? null),
-                data,
-                selectors: args.selectors,
-                elementCount: elements.length,
-                elements,
-              })
-            );
+            const result: Record<string, unknown> = {
+              route: page.path,
+              query: toSerializableValue(page.query ?? null),
+              selectors: args.selectors,
+              elementCount: elements.length,
+              elements,
+            };
+            if (Object.keys(data).length > 0) {
+              result.data = data;
+            }
+            if (args.selectors.length === 0 && !args.withData && args.dataPaths.length === 0) {
+              result.hint =
+                "未提供 selectors / dataPaths / withData，仅返回 route。这并不代表页面为空。如需结构快照请传 selectors（如 ['.container', '.card']）或 withData=true 获取页面数据；按字段裁剪请用 dataPaths。";
+            }
+            return toTextResult(formatJson(result));
           }
         );
       }),

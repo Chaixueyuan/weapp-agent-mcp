@@ -283,6 +283,78 @@ export function createFunctionFromSource(
   }
 }
 
+export function getByPath(target: unknown, path: string): unknown {
+  if (target == null || !path) {
+    return target;
+  }
+  const segments = path
+    .replace(/\[(-?\d+)\]/g, ".$1")
+    .split(".")
+    .filter((seg) => seg.length > 0);
+  let current: any = target;
+  for (const seg of segments) {
+    if (current == null) {
+      return undefined;
+    }
+    if (Array.isArray(current)) {
+      if (/^-?\d+$/.test(seg)) {
+        const idx = Number(seg);
+        current = idx < 0 ? current[current.length + idx] : current[idx];
+        continue;
+      }
+      if (seg === "length") {
+        current = current.length;
+        continue;
+      }
+      return undefined;
+    }
+    if (typeof current !== "object") {
+      return undefined;
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, seg)) {
+      return undefined;
+    }
+    current = current[seg];
+  }
+  return current;
+}
+
+export function pickByPaths(
+  source: unknown,
+  paths: string[]
+): { values: Record<string, unknown>; missing: string[] } {
+  const values: Record<string, unknown> = {};
+  const missing: string[] = [];
+  for (const p of paths) {
+    const v = getByPath(source, p);
+    if (v === undefined) {
+      missing.push(p);
+    } else {
+      values[p] = toSerializableValue(v) as unknown;
+    }
+  }
+  return { values, missing };
+}
+
+export function clampJsonByBytes(
+  value: unknown,
+  maxBytes?: number
+): { value: unknown; truncated: boolean; bytes: number } {
+  const serialized = JSON.stringify(value) ?? "";
+  const bytes = Buffer.byteLength(serialized, "utf8");
+  if (!maxBytes || bytes <= maxBytes) {
+    return { value, truncated: false, bytes };
+  }
+  const headBudget = Math.max(0, maxBytes - 32);
+  const buf = Buffer.from(serialized, "utf8");
+  const head = buf.subarray(0, headBudget).toString("utf8").replace(/�+$/, "");
+  return {
+    value: `${head}...[truncated ${bytes - maxBytes}B]`,
+    truncated: true,
+    bytes,
+  };
+}
+
 export function parseSelectorWithIndex(selector: string): { baseSelector: string; index: number } | null {
   // 匹配 selector[index=N] 语法
   const match = selector.match(/^(.+?)\[index=(\d+)\]$/);

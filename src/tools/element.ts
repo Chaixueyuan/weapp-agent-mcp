@@ -483,7 +483,7 @@ function createCallElementMethodTool(manager: WeappAutomatorManager): AnyTool {
 function createGetElementDataTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getData",
-    description: "获取组件实例渲染数据，仅自定义组件可以使用。",
+    description: "获取组件实例渲染数据，仅自定义组件可以使用。不传 path 时返回完整组件 data 对象；传 path（如 'list.0.id'）返回精确子值。",
     parameters: getElementDataParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -499,7 +499,7 @@ function createGetElementDataTool(manager: WeappAutomatorManager): AnyTool {
           );
 
           const data = await manager.withRequestTimeout(
-            () => element.data(args.path),
+            () => (args.path !== undefined ? element.data(args.path) : element.data()),
             { description: `读取组件数据${args.path ? ` (${args.path})` : ""}` }
           );
           return toTextResult(
@@ -851,10 +851,27 @@ function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyToo
                   query.select(full).boundingClientRect();
 
                   query.exec((res: unknown[]) => {
-                    if (res && res.length > 0 && res[0]) {
-                      resolve(res[0]);
+                    if (res && res.length > 0) {
+                      if (res[0]) {
+                        resolve(res[0]);
+                      } else {
+                        // Selector matched but element not in layout (display:none / hidden
+                        // popup / not mounted yet). Return zero-sized rect with a flag so
+                        // callers can disambiguate from a missing element, matching the
+                        // behavior of element_getWxml which still returns wxml in this case.
+                        resolve({
+                          left: 0,
+                          top: 0,
+                          right: 0,
+                          bottom: 0,
+                          width: 0,
+                          height: 0,
+                          rendered: false,
+                          note: "selector matched but element is not in layout (display:none / hidden / not yet mounted)",
+                        });
+                      }
                     } else {
-                      reject(new Error(`Element not found or not rendered: "${full}". (exec returned ${JSON.stringify(res)})`));
+                      reject(new Error(`Element not found: "${full}". (exec returned ${JSON.stringify(res)})`));
                     }
                   });
                 });
