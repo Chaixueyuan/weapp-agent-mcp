@@ -1,6 +1,7 @@
 {
   "name": "@chaixueyuan/weapp-agent-mcp",
-  "version": "0.4.0",
+  "version": "0.4.3",
+  "mcpName": "io.github.Chaixueyuan/weapp-agent-mcp",
   "description": "Agent-first MCP server for WeChat Mini Program debugging, automation, and lightweight testing",
   "type": "module",
   "bin": {
@@ -15,9 +16,22 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "wechat",
-    "mini-program",
-    "automation"
+    "wechat-miniprogram",
+    "weapp",
+    "miniprogram",
+    "miniprogram-automator",
+    "wechat-devtools",
+    "agent",
+    "claude",
+    "claude-code",
+    "cursor",
+    "automation",
+    "e2e-testing",
+    "小程序",
+    "微信小程序"
   ],
   "author": "chaixueyuan",
   "license": "MIT",

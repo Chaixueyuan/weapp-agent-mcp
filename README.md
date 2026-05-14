@@ -1,5 +1,18 @@
 # weapp-agent-mcp
 
+[![npm version](https://img.shields.io/npm/v/@chaixueyuan/weapp-agent-mcp.svg)](https://www.npmjs.com/package/@chaixueyuan/weapp-agent-mcp)
+[![npm downloads](https://img.shields.io/npm/dm/@chaixueyuan/weapp-agent-mcp.svg)](https://www.npmjs.com/package/@chaixueyuan/weapp-agent-mcp)
+[![license](https://img.shields.io/npm/l/@chaixueyuan/weapp-agent-mcp.svg)](./LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-server-blue.svg)](https://modelcontextprotocol.io/)
+
+> **Agent-first MCP server for WeChat Mini Program debugging, automation, and lightweight regression testing.**
+>
+> 面向 agent 的微信小程序 MCP 服务 — 让 Claude Code / Cursor / Codex 等 agent 在对话中直接驱动微信开发者工具完成调试、UI 操作、页面巡检与轻量测试。
+
+<!-- TODO: 这里放一段 5-10 秒 demo GIF：agent 调用 mp_screenshot + page_expectVisible 完成一次页面巡检。建议 ≤ 1.5MB，命名 docs/demo.gif -->
+
+📖 [Changelog](./CHANGELOG.md) · 🐛 [Issues](https://github.com/Chaixueyuan/weapp-agent-mcp/issues) · 💬 [Discussions](https://github.com/Chaixueyuan/weapp-agent-mcp/discussions)
+
 `weapp-agent-mcp` 是一个面向 agent 的微信小程序 MCP 服务，基于 [`miniprogram-automator`](https://www.npmjs.com/package/miniprogram-automator) 封装微信开发者工具自动化能力，用于页面调试、元素操作、轻量回归测试与恢复友好型排查。
 
 它适合：
@@ -12,11 +25,28 @@
 - 并发截图通道
 - 超长高压全链路回归引擎
 
-> 项目来源：本仓库基于上游 `weapp-dev-mcp` / `@yfme/weapp-dev-mcp` 演进而来，当前以独立发布与 agent-first 体验为目标继续维护。
-
 ## 文档导航
 
 更完整的文档入口见 `docs/README.md`。
+
+## 为什么选 weapp-agent-mcp
+
+如果你已经在用 Claude Code / Cursor / Codex 等 agent 写小程序，传统的 `miniprogram-automator` 脚本式调用不够顺手 — 你得让 agent 写 node 脚本、跑、读输出、再调整。本项目把自动化能力直接暴露成 agent 工具调用，让 agent 在对话中可以：
+
+- 🤖 **零脚本调试** — 直接调用 `mp_screenshot` / `page_snapshot` / `element_tap`，不必中转脚本
+- 🔁 **恢复友好** — 内置 `mp_healthCheck` / `mp_recoverConnection`，断连后能自愈，长会话更稳
+- 📋 **轻量回归** — `mp_runScenario` + `mp_generateScenarioReport` 产出 markdown 报告，适合给 PR / oncall 用
+- 🎯 **稳定 selector 优先** — 设计上鼓励 `qa-*` 命名锚点，减少 UI 改版后的脚本碎裂
+
+### 适用 / 不适用对比
+
+| 场景 | 是否适用 |
+|---|---|
+| Agent 主动驱动调试 / 巡检 | ✅ 主推场景 |
+| 写传统脚本式 e2e 测试 | ⚪ 直接用原生 `miniprogram-automator` SDK 更轻 |
+| 并发截图 / 压测 | ❌ 不适用 — 截图通道按串行设计 |
+| 长会话 / 多轮调试 | ✅ 有 health / recover 工具兜底 |
+| CI 上的长链路回归 | ⚠️ 拆短 scenario 后可用，超长链路建议专业框架 |
 
 ## 前置要求
 
