@@ -409,7 +409,7 @@ function createNavigateTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_navigate",
     description:
-      "在小程序内导航，支持 navigateTo、redirectTo、reLaunch、switchTab 和 navigateBack。",
+      "在小程序内导航，支持 navigateTo、redirectTo、reLaunch、switchTab 和 navigateBack。若 waitMs 阶段超时，错误信息会附带 currentRoute 供你判断导航是否实际已生效。",
     parameters: navigateParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -454,7 +454,15 @@ function createNavigateTool(manager: WeappAutomatorManager): AnyTool {
           }
 
           if (waitMs && page) {
-            await page.waitFor(waitMs);
+            try {
+              await page.waitFor(waitMs);
+            } catch (waitError) {
+              const message = waitError instanceof Error ? waitError.message : String(waitError);
+              const probed = await miniProgram.currentPage().catch(() => null);
+              throw new UserError(
+                `mp_navigate waitFor(${waitMs}ms) 失败: ${message}。当前 route: ${probed?.path ?? "unknown"}（导航本身可能已完成，仅 waitFor 阶段超时）。建议：1) 增大 waitMs；2) 用 mp_pollUntil 等待具体元素或 data 字段就绪。`
+              );
+            }
           }
 
           const activePage = page ?? (await miniProgram.currentPage());
@@ -508,12 +516,20 @@ function createScreenshotTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_screenshot",
     description:
-      "截取当前小程序视口的截图。需要已有活动会话；若提示没有活动会话，请先调用 mp_ensureConnection。默认返回内联图片，或保存到文件路径。支持 timeoutMs；注意官方说明该能力仅支持开发者工具模拟器。第一次失败时自动重试一次（间隔 1s）；连续失败时返回 reasonCode（SCREENSHOT_TIMEOUT / SIMULATOR_HIDDEN / RENDERER_NOT_READY / UNKNOWN）并附建议。",
+      "截取当前小程序视口的截图。需要已有活动会话；若提示没有活动会话，请先调用 mp_ensureConnection。默认返回内联图片，或保存到文件路径（若父目录不存在会自动 mkdir -p 创建）。支持 timeoutMs；注意官方说明该能力仅支持开发者工具模拟器。第一次失败时自动重试一次（间隔 1s）；连续失败时返回 reasonCode（SCREENSHOT_TIMEOUT / SIMULATOR_HIDDEN / RENDERER_NOT_READY / UNKNOWN）并附建议。",
     parameters: screenshotParameters,
     timeoutMs: 60000,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
       const args = screenshotParameters.parse(rawArgs ?? {});
+      if (args.path) {
+        try {
+          await mkdir(dirname(args.path), { recursive: true });
+        } catch (mkdirError) {
+          const message = mkdirError instanceof Error ? mkdirError.message : String(mkdirError);
+          throw new UserError(`创建截图目录失败 (${dirname(args.path)}): ${message}`);
+        }
+      }
       return manager.withMiniProgram<ContentResult>(
         context.log,
         { overrides: args.connection },
@@ -687,7 +703,7 @@ function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_pollUntil",
     description:
-      "轮询执行 predicate 直到返回真值，可选执行 action 并拍 before/after 快照。适合时序敏感测试（如等待打字机进入 displaying 状态后立刻打断）。predicate / action 是 function 源码字符串，跑在小程序 AppService 上下文（可用 getCurrentPages、wx 等）。轮询由 server 端管理，重连不会留下脏 setInterval。before 反映 predicate 命中时刻的 page.data（不是首次 poll 时刻）；after 反映 action 跑完且等待 snapshotAfterMs 后的状态。注意：若 timeoutMs 比单次 evaluate 还短，可能只跑 1 次 predicate 就超时。timeoutMs 上限 600s。",
+      "**通用 waitFor / waitData 工具**：轮询执行 predicate 直到返回真值，可选执行 action 并拍 before/after 快照。典型场景：等 page.data 某字段变化（如 `conversationHistory.length === 1`）、等异步状态切换、等 SSE 流式中段窗口、时序敏感的测试打断。predicate / action 是 function 源码字符串，跑在小程序 AppService 上下文（可用 getCurrentPages、wx 等）。轮询由 server 端管理，重连不会留下脏 setInterval。before 反映 predicate 命中时刻的 page.data（不是首次 poll 时刻）；after 反映 action 跑完且等待 snapshotAfterMs 后的状态。注意：若 timeoutMs 比单次 evaluate 还短，可能只跑 1 次 predicate 就超时。timeoutMs 上限 600s。",
     parameters: pollUntilParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -918,7 +934,7 @@ function createCurrentPageTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_currentPage",
     description:
-      "获取当前页面的信息（路径、查询参数、尺寸、滚动位置）。withData=true 额外返回 page.data。可选 dataPaths（如 ['conversationHistory.length','isSearching']）只取关键字段，避免大数组爆 token；可选 maxBytes 触发 JSON 截断并返回 truncated 标记。",
+      "获取当前页面的信息（路径、查询参数、尺寸、滚动位置）。⚠️ 路由信息来自 miniprogram-automator SDK 的 currentPage() 句柄，**属于快照型**，在快速 navigate / reLaunch / switchTab 之后可能滞后于真实状态。如果对路由准确性敏感（例如刚导航完成后的判断），请用 mp_evaluate 跑 `return getCurrentPages().slice(-1)[0].route` 做交叉校验。withData=true 额外返回 page.data。可选 dataPaths（如 ['conversationHistory.length','isSearching']）只取关键字段，避免大数组爆 token；可选 maxBytes 触发 JSON 截断并返回 truncated 标记。",
     parameters: currentPageParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {

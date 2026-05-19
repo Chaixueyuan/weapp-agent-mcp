@@ -126,10 +126,32 @@ export async function resolveElement(
   if (!page || typeof (page as { $?: unknown }).$ !== "function") {
     throw new UserError("Page instance is not available to resolve elements.");
   }
-  let element = await (page as { $: (s: string) => Promise<any> }).$(selector);
-  if (!element) {
-    throw new UserError(`Element not found for selector "${selector}".`);
+
+  const parsed = parseSelectorWithIndex(selector);
+  let element: any;
+
+  if (parsed) {
+    const pageWithAll = page as { $$?: (s: string) => Promise<unknown[]> };
+    if (typeof pageWithAll.$$ !== "function") {
+      throw new UserError("Page instance does not support indexed selectors (page.$$ missing).");
+    }
+    const elements = await pageWithAll.$$(parsed.baseSelector);
+    if (!Array.isArray(elements) || elements.length === 0) {
+      throw new UserError(`Element not found for selector "${parsed.baseSelector}".`);
+    }
+    if (parsed.index < 0 || parsed.index >= elements.length) {
+      throw new UserError(
+        `Index ${parsed.index} out of range (0-${elements.length - 1}) for selector "${parsed.baseSelector}".`
+      );
+    }
+    element = elements[parsed.index];
+  } else {
+    element = await (page as { $: (s: string) => Promise<any> }).$(selector);
+    if (!element) {
+      throw new UserError(`Element not found for selector "${selector}".`);
+    }
   }
+
   if (innerSelector) {
     if (typeof element.$ !== "function") {
       throw new UserError(

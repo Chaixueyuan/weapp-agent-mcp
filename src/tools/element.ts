@@ -156,51 +156,11 @@ function createTapElementTool(manager: WeappAutomatorManager): AnyTool {
         context.log,
         { overrides: args.connection },
         async (page) => {
-          let selector = args.selector;
-          let indexHint: number | undefined;
-
-          const parsed = parseSelectorWithIndex(selector);
-          if (parsed) {
-            selector = parsed.baseSelector;
-            indexHint = parsed.index;
-          }
-
-          let element;
-          if (indexHint === undefined) {
-            element = await resolveElement(
-              page,
-              args.selector,
-              args.innerSelector
-            );
-          } else {
-            if (typeof page.$$ !== "function") {
-              throw new UserError("当前页面不支持查询元素数组。");
-            }
-
-            let elements = await page.$$(selector);
-            if (!Array.isArray(elements) || elements.length === 0) {
-              throw new UserError(`未找到元素: "${selector}"`);
-            }
-
-            if (indexHint < 0 || indexHint >= elements.length) {
-              throw new UserError(`索引 ${indexHint} 超出范围 (0-${elements.length - 1})。`);
-            }
-
-            element = elements[indexHint];
-
-            if (args.innerSelector) {
-              if (typeof element.$ !== "function") {
-                throw new UserError(`元素 "${args.selector}" 不支持查询内部元素。`);
-              }
-              const inner = await element.$(args.innerSelector);
-              if (!inner) {
-                throw new UserError(
-                  `在元素 "${args.selector}" 内未找到选择器 "${args.innerSelector}" 对应的元素。`
-                );
-              }
-              element = inner;
-            }
-          }
+          const element = await resolveElement(
+            page,
+            args.selector,
+            args.innerSelector
+          );
 
           try {
             await element.tap();
@@ -238,7 +198,7 @@ function createTouchElementTool(manager: WeappAutomatorManager): AnyTool {
         context.log,
         { overrides: args.connection },
         async (page) => {
-          const element = await resolveIndexedElement(
+          const element = await resolveElement(
             page,
             args.selector,
             args.innerSelector
@@ -331,7 +291,7 @@ function createSwipeElementTool(manager: WeappAutomatorManager): AnyTool {
         context.log,
         { overrides: args.connection },
         async (page) => {
-          const element = await resolveIndexedElement(
+          const element = await resolveElement(
             page,
             args.selector,
             args.innerSelector
@@ -420,7 +380,7 @@ function createSwipeElementTool(manager: WeappAutomatorManager): AnyTool {
 function createInputTextTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_input",
-    description: "向指定元素输入文本。",
+    description: "向指定元素输入文本。支持 [index=N] 语法选择第 N 个元素。",
     parameters: inputTextParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -448,7 +408,7 @@ function createInputTextTool(manager: WeappAutomatorManager): AnyTool {
 function createCallElementMethodTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_callMethod",
-    description: "调用组件实例指定方法，仅自定义组件可以使用。",
+    description: "调用组件实例指定方法，仅自定义组件可以使用。支持 [index=N] 语法选择第 N 个元素。",
     parameters: callElementMethodParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -483,7 +443,7 @@ function createCallElementMethodTool(manager: WeappAutomatorManager): AnyTool {
 function createGetElementDataTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getData",
-    description: "获取组件实例渲染数据，仅自定义组件可以使用。不传 path 时返回完整组件 data 对象；传 path（如 'list.0.id'）返回精确子值。",
+    description: "获取组件实例渲染数据，仅自定义组件可以使用。不传 path 时返回完整组件 data 对象；传 path（如 'list.0.id'）返回精确子值。支持 [index=N] 语法选择第 N 个元素。",
     parameters: getElementDataParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -519,7 +479,7 @@ function createGetElementDataTool(manager: WeappAutomatorManager): AnyTool {
 function createSetElementDataTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_setData",
-    description: "设置组件实例渲染数据，仅自定义组件可以使用。",
+    description: "设置组件实例渲染数据，仅自定义组件可以使用。支持 [index=N] 语法选择第 N 个元素。",
     parameters: setElementDataParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -548,7 +508,7 @@ function createSetElementDataTool(manager: WeappAutomatorManager): AnyTool {
 function createGetInnerElementTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getInnerElement",
-    description: "在元素范围内获取元素，相当于 element.$(selector)。设置 withWxml 为 true 可额外返回每个元素的完整 outerWxml。",
+    description: "在元素范围内获取元素，相当于 element.$(selector)。设置 withWxml 为 true 可额外返回每个元素的完整 outerWxml。selector 支持 [index=N] 语法（作用于外层 selector，innerSelector 内不支持下标）。",
     parameters: getInnerElementParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -595,7 +555,7 @@ function createGetInnerElementTool(manager: WeappAutomatorManager): AnyTool {
 function createGetInnerElementsTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getInnerElements",
-    description: "在元素范围内获取元素数组，相当于 element.$$(selector)。设置 withWxml 为 true 可额外返回每个元素的完整 outerWxml。",
+    description: "在元素范围内获取元素数组，相当于 element.$$(selector)。设置 withWxml 为 true 可额外返回每个元素的完整 outerWxml。selector 支持 [index=N] 语法（作用于外层 selector，innerSelector 内不支持下标）。",
     parameters: getInnerElementsParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -651,7 +611,7 @@ function createGetInnerElementsTool(manager: WeappAutomatorManager): AnyTool {
 function createGetElementWxmlTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getWxml",
-    description: "获取元素 WXML。默认获取内部 WXML(element.wxml())，设置 outer 为 true 可获取包含元素本身的 WXML(element.outerWxml())。",
+    description: "获取元素 WXML。默认获取内部 WXML(element.wxml())，设置 outer 为 true 可获取包含元素本身的 WXML(element.outerWxml())。支持 [index=N] 语法选择第 N 个元素。",
     parameters: getElementWxmlParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -691,7 +651,7 @@ function createGetElementWxmlTool(manager: WeappAutomatorManager): AnyTool {
 function createGetElementStylesTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getStyles",
-    description: "获取元素的样式值。names 为样式名数组（如 ['color', 'fontSize', 'backgroundColor']）。",
+    description: "获取元素的样式值。names 为样式名数组（如 ['color', 'fontSize', 'backgroundColor']）。支持 [index=N] 语法选择第 N 个元素。",
     parameters: getElementStylesParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -740,7 +700,7 @@ function createGetElementStylesTool(manager: WeappAutomatorManager): AnyTool {
 function createScrollToTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_scrollTo",
-    description: "滚动 scroll-view 组件到指定位置。仅适用于 scroll-view 组件。",
+    description: "滚动 scroll-view 组件到指定位置。仅适用于 scroll-view 组件。支持 [index=N] 语法选择第 N 个元素。",
     parameters: scrollToParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -775,7 +735,7 @@ function createScrollToTool(manager: WeappAutomatorManager): AnyTool {
 function createGetAttributesTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getAttributes",
-    description: "获取元素的特性值。names 为特性名数组（如 ['class', 'id', 'data-index']）。",
+    description: "获取元素的特性值。names 为特性名数组（如 ['class', 'id', 'data-index']）。支持 [index=N] 语法选择第 N 个元素。",
     parameters: getAttributesParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -824,65 +784,91 @@ function createGetAttributesTool(manager: WeappAutomatorManager): AnyTool {
 function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getBoundingClientRect",
-    description: "获取元素相对于视口的边界矩形信息（left、top、width、height、right、bottom）。此方法返回的是考虑 CSS transform 变换后的实际渲染尺寸和位置。支持跨组件查询：若需获取自定义组件内部元素，可将 selector 设为组件选择器，innerSelector 设为内部元素选择器。注意：目前仅支持 ID 选择器、类选择器。",
+    description: "获取元素相对于视口的边界矩形信息（left、top、width、height、right、bottom）。此方法返回的是考虑 CSS transform 变换后的实际渲染尺寸和位置。支持跨组件查询：若需获取自定义组件内部元素，可将 selector 设为组件选择器，innerSelector 设为内部元素选择器。支持 [index=N] 语法选择第 N 个元素（仅作用于 selector，不作用于 innerSelector）。注意：目前仅支持 ID 选择器、类选择器。",
     parameters: getBoundingClientRectParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
       const args = getBoundingClientRectParameters.parse(rawArgs ?? {});
       const { selector, innerSelector } = args;
+      const parsed = parseSelectorWithIndex(selector);
+      const baseSelector = parsed ? parsed.baseSelector : selector;
+      const indexHint = parsed ? parsed.index : -1;
 
       return manager.withMiniProgram(
         context.log,
         { overrides: args.connection },
         async (miniProgram) => {
-          const fullSelector = innerSelector ? `${selector} >>> ${innerSelector}` : selector;
+          const fullSelector = innerSelector ? `${baseSelector} >>> ${innerSelector}` : baseSelector;
 
           let result;
           try {
             result = await miniProgram.evaluate(
-              (sel: string, innerSel?: string) => {
+              (sel: string, innerSel: string | undefined, idx: number) => {
                 return new Promise((resolve, reject) => {
                   // @ts-expect-error - wx 是小程序运行时全局对象
                   const query = wx.createSelectorQuery();
 
                   // 如果有 innerSelector，使用 >>> 拼接成穿透选择器，这比 selectComponent 更可靠
                   const full = innerSel ? `${sel} >>> ${innerSel}` : sel;
+                  const useIndex = idx >= 0;
 
-                  query.select(full).boundingClientRect();
+                  if (useIndex) {
+                    query.selectAll(full).boundingClientRect();
+                  } else {
+                    query.select(full).boundingClientRect();
+                  }
 
                   query.exec((res: unknown[]) => {
-                    if (res && res.length > 0) {
-                      if (res[0]) {
-                        resolve(res[0]);
-                      } else {
-                        // Selector matched but element not in layout (display:none / hidden
-                        // popup / not mounted yet). Return zero-sized rect with a flag so
-                        // callers can disambiguate from a missing element, matching the
-                        // behavior of element_getWxml which still returns wxml in this case.
-                        resolve({
-                          left: 0,
-                          top: 0,
-                          right: 0,
-                          bottom: 0,
-                          width: 0,
-                          height: 0,
-                          rendered: false,
-                          note: "selector matched but element is not in layout (display:none / hidden / not yet mounted)",
-                        });
-                      }
-                    } else {
+                    if (!res || res.length === 0) {
                       reject(new Error(`Element not found: "${full}". (exec returned ${JSON.stringify(res)})`));
+                      return;
+                    }
+
+                    let target: unknown;
+                    if (useIndex) {
+                      const list = res[0] as unknown[] | undefined;
+                      if (!Array.isArray(list) || list.length === 0) {
+                        reject(new Error(`Element not found for selectAll: "${full}".`));
+                        return;
+                      }
+                      if (idx >= list.length) {
+                        reject(new Error(`Index ${idx} out of range (0-${list.length - 1}) for selector "${full}".`));
+                        return;
+                      }
+                      target = list[idx];
+                    } else {
+                      target = res[0];
+                    }
+
+                    if (target) {
+                      resolve(target);
+                    } else {
+                      // Selector matched but element not in layout (display:none / hidden
+                      // popup / not mounted yet). Return zero-sized rect with a flag so
+                      // callers can disambiguate from a missing element, matching the
+                      // behavior of element_getWxml which still returns wxml in this case.
+                      resolve({
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                        width: 0,
+                        height: 0,
+                        rendered: false,
+                        note: "selector matched but element is not in layout (display:none / hidden / not yet mounted)",
+                      });
                     }
                   });
                 });
               },
-              selector,
-              innerSelector
+              baseSelector,
+              innerSelector,
+              indexHint
             );
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             throw new UserError(
-              `获取元素 "${fullSelector}" 的边界矩形失败: ${message}`
+              `获取元素 "${fullSelector}"${indexHint >= 0 ? `[index=${indexHint}]` : ""} 的边界矩形失败: ${message}`
             );
           }
 
@@ -897,46 +883,6 @@ function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyToo
       );
       }),
   };
-}
-
-async function resolveIndexedElement(
-  page: any,
-  selector: string,
-  innerSelector?: string
-): Promise<any> {
-  const parsed = parseSelectorWithIndex(selector);
-  if (!parsed) {
-    return resolveElement(page, selector, innerSelector);
-  }
-
-  if (typeof page.$$ !== "function") {
-    throw new UserError("当前页面不支持查询元素数组。");
-  }
-
-  const elements = await page.$$(parsed.baseSelector);
-  if (!Array.isArray(elements) || elements.length === 0) {
-    throw new UserError(`未找到元素: "${parsed.baseSelector}"`);
-  }
-
-  if (parsed.index < 0 || parsed.index >= elements.length) {
-    throw new UserError(`索引 ${parsed.index} 超出范围 (0-${elements.length - 1})。`);
-  }
-
-  let element = elements[parsed.index];
-  if (innerSelector) {
-    if (typeof element.$ !== "function") {
-      throw new UserError(`元素 "${selector}" 不支持查询内部元素。`);
-    }
-    const inner = await element.$(innerSelector);
-    if (!inner) {
-      throw new UserError(
-        `在元素 "${selector}" 内未找到选择器 "${innerSelector}" 对应的元素。`
-      );
-    }
-    element = inner;
-  }
-
-  return element;
 }
 
 async function getElementMetrics(element: any): Promise<{

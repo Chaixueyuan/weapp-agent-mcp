@@ -117,7 +117,7 @@ export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
 function createGetElementTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_getElement",
-    description: "通过选择器获取页面元素，相当于 page.$(selector)。返回每个元素的摘要信息（tagName、text、value、size、offset）；设置 withWxml 为 true 可额外返回元素的完整 outerWxml。支持 [index=N] 语法选择第 N 个元素。",
+    description: "通过选择器获取页面元素，相当于 page.$(selector)。返回每个元素的摘要信息（tagName、text、value、size、offset）；设置 withWxml 为 true 可额外返回元素的完整 outerWxml。支持 [index=N] 语法选择第 N 个元素。⚠️ 自定义组件内部的元素 page_* 查不到（page.$ 不穿透 component shadow），需用 element_getInnerElement(s) + innerSelector，或在 element_* 工具里用 selector(组件) + innerSelector(内部) 跨组件查询。",
     parameters: getElementParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -200,7 +200,7 @@ function createGetElementTool(manager: WeappAutomatorManager): AnyTool {
 function createGetElementsTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_getElements",
-    description: "通过选择器获取页面元素数组，相当于 page.$$(selector)。返回每个元素的摘要信息（tagName、text、value、size、offset）；设置 withWxml 为 true 可额外返回每个元素的完整 outerWxml。支持 [index=N] 语法选择第 N 个元素。",
+    description: "通过选择器获取页面元素数组，相当于 page.$$(selector)。返回每个元素的摘要信息（tagName、text、value、size、offset）；设置 withWxml 为 true 可额外返回每个元素的完整 outerWxml。支持 [index=N] 语法选择第 N 个元素。⚠️ 自定义组件内部的元素 page_* 查不到（page.$$ 不穿透 component shadow），需用 element_getInnerElements + innerSelector，或在 element_* 工具里用 selector(组件) + innerSelector(内部) 跨组件查询。",
     parameters: getElementsParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
