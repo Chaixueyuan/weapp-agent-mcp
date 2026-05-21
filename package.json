@@ -1,6 +1,6 @@
 {
   "name": "@chaixueyuan/weapp-agent-mcp",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "mcpName": "io.github.Chaixueyuan/weapp-agent-mcp",
   "description": "Agent-first MCP server for WeChat Mini Program debugging, automation, and lightweight testing",
   "type": "module",

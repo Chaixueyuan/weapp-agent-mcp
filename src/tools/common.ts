@@ -137,7 +137,7 @@ export async function resolveElement(
     }
     const elements = await pageWithAll.$$(parsed.baseSelector);
     if (!Array.isArray(elements) || elements.length === 0) {
-      throw new UserError(`Element not found for selector "${parsed.baseSelector}".`);
+      throw new UserError(notFoundMessage(parsed.baseSelector));
     }
     if (parsed.index < 0 || parsed.index >= elements.length) {
       throw new UserError(
@@ -148,7 +148,7 @@ export async function resolveElement(
   } else {
     element = await (page as { $: (s: string) => Promise<any> }).$(selector);
     if (!element) {
-      throw new UserError(`Element not found for selector "${selector}".`);
+      throw new UserError(notFoundMessage(selector));
     }
   }
 
@@ -161,12 +161,23 @@ export async function resolveElement(
     const inner = await element.$(innerSelector);
     if (!inner) {
       throw new UserError(
-        `Element not found for selector "${innerSelector}" within "${selector}".`
+        `${notFoundMessage(innerSelector)} (查询范围: 元素 "${selector}" 内部)`
       );
     }
     element = inner;
   }
   return element;
+}
+
+function notFoundMessage(selector: string): string {
+  const hints: string[] = [];
+  if (/\{\{|\}\}/.test(selector)) {
+    hints.push("selector 含 `{{}}` 模板插值 — 用渲染后的字面值或静态 class 部分");
+  }
+  hints.push("调 `page_snapshot(withElements=true)` 列出当前 DOM 摘要");
+  hints.push("调 `page_getWxml` 检查渲染后的合成 class");
+  hints.push("自定义组件内部用 `element_getInnerElement(s)` 或 selector + innerSelector");
+  return `元素未找到: "${selector}"。建议：${hints.map((h, i) => `${i + 1}) ${h}`).join("；")}。`;
 }
 
 export async function summarizeElement(
@@ -311,21 +322,37 @@ export function getByPath(target: unknown, path: string): unknown {
   }
   const segments = path
     .replace(/\[(-?\d+)\]/g, ".$1")
+    .replace(/\[\*\]/g, ".*")
     .split(".")
     .filter((seg) => seg.length > 0);
-  let current: any = target;
-  for (const seg of segments) {
+  return walkSegments(target, segments);
+}
+
+function walkSegments(current: unknown, segments: string[]): unknown {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     if (current == null) {
       return undefined;
+    }
+    if (seg === "*") {
+      if (!Array.isArray(current)) {
+        return undefined;
+      }
+      const rest = segments.slice(i + 1);
+      if (rest.length === 0) {
+        return current;
+      }
+      return (current as unknown[]).map((item) => walkSegments(item, rest));
     }
     if (Array.isArray(current)) {
       if (/^-?\d+$/.test(seg)) {
         const idx = Number(seg);
-        current = idx < 0 ? current[current.length + idx] : current[idx];
+        const arr = current as unknown[];
+        current = idx < 0 ? arr[arr.length + idx] : arr[idx];
         continue;
       }
       if (seg === "length") {
-        current = current.length;
+        current = (current as unknown[]).length;
         continue;
       }
       return undefined;
@@ -333,10 +360,11 @@ export function getByPath(target: unknown, path: string): unknown {
     if (typeof current !== "object") {
       return undefined;
     }
-    if (!Object.prototype.hasOwnProperty.call(current, seg)) {
+    const obj = current as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(obj, seg)) {
       return undefined;
     }
-    current = current[seg];
+    current = obj[seg];
   }
   return current;
 }

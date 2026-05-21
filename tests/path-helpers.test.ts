@@ -109,3 +109,58 @@ test("getByPath returns undefined for non-numeric segments on arrays except leng
   assert.equal(getByPath(target, "list.length"), 3);
   assert.equal(getByPath(target, "list.foo"), undefined);
 });
+
+test("getByPath wildcard [*] maps over array elements", () => {
+  const target = {
+    conversationHistory: [
+      { id: "a", aiStatus: "pending" },
+      { id: "b", aiStatus: "completed" },
+      { id: "c", aiStatus: "completed" },
+    ],
+  };
+  assert.deepEqual(
+    getByPath(target, "conversationHistory[*].aiStatus"),
+    ["pending", "completed", "completed"]
+  );
+  assert.deepEqual(
+    getByPath(target, "conversationHistory.*.id"),
+    ["a", "b", "c"]
+  );
+});
+
+test("getByPath wildcard returns the array itself when no rest segments", () => {
+  const target = { items: [1, 2, 3] };
+  assert.deepEqual(getByPath(target, "items[*]"), [1, 2, 3]);
+});
+
+test("getByPath wildcard on non-array returns undefined", () => {
+  const target = { items: { a: 1, b: 2 } };
+  assert.equal(getByPath(target, "items[*].a"), undefined);
+});
+
+test("getByPath wildcard yields undefined slots for missing inner fields", () => {
+  const target = {
+    list: [{ x: 1 }, { y: 2 }, { x: 3 }],
+  };
+  assert.deepEqual(getByPath(target, "list[*].x"), [1, undefined, 3]);
+});
+
+test("pickByPaths supports wildcard projection on large nested arrays", () => {
+  const target = {
+    history: [
+      { id: 1, status: "ok", payload: { huge: "x".repeat(100) } },
+      { id: 2, status: "fail", payload: { huge: "x".repeat(100) } },
+    ],
+  };
+  const picked = pickByPaths(target, [
+    "history[*].id",
+    "history[*].status",
+    "history.length",
+  ]);
+  assert.deepEqual(picked.values, {
+    "history[*].id": [1, 2],
+    "history[*].status": ["ok", "fail"],
+    "history.length": 2,
+  });
+  assert.deepEqual(picked.missing, []);
+});

@@ -9,6 +9,7 @@ import {
 import { z } from "zod";
 
 import type { WeappAutomatorManager } from "../weappClient.js";
+import { SERVER_VERSION } from "../version.js";
 import {
   AnyTool,
   ToolContext,
@@ -232,7 +233,7 @@ function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_ensureConnection",
     description:
-      "检查小程序自动化会话是否就绪。建议先调用 mp_diagnoseConnection，再调用本工具。若失败，优先根据诊断结果处理；若返回项目选择提示，则传 projectSelection。",
+      "检查小程序自动化会话是否就绪。建议先调用 mp_diagnoseConnection，再调用本工具。若失败，**先看错误信息内的 Next step 引导**（通常是 retry + reconnect=true，或调 mp_listProjects 后传 projectSelection），不要直接重试同一调用。defaultProject 不在 recents 时 server 会用 defaultProject 重启 cli auto，第一次仍可能失败 — 此时按错误信息 retry 即可。",
     parameters: ensureConnectionParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -295,7 +296,7 @@ function createEnsureConnectionTool(manager: WeappAutomatorManager): AnyTool {
 function createHealthCheckTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_healthCheck",
-    description: "聚合返回当前小程序自动化环境的健康状态，包括连接、页面、项目和日志监听状态。建议在调试前先调用。",
+    description: "聚合返回当前小程序自动化环境的健康状态，包括连接、页面、项目和日志监听状态。返回值包含 `serverVersion` 字段（mcp server 版本号），便于 agent 在反馈/调试时自带版本信息。建议在调试前先调用。",
     parameters: healthCheckParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -329,6 +330,7 @@ function createHealthCheckTool(manager: WeappAutomatorManager): AnyTool {
               formatJson({
                 ok,
                 summary,
+                serverVersion: SERVER_VERSION,
                 needsRecovery,
                 devtoolsOnline: connection.devtoolsOnline,
                 wsReachable: connection.wsReachable,
@@ -409,7 +411,7 @@ function createNavigateTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_navigate",
     description:
-      "在小程序内导航，支持 navigateTo、redirectTo、reLaunch、switchTab 和 navigateBack。若 waitMs 阶段超时，错误信息会附带 currentRoute 供你判断导航是否实际已生效。",
+      "在小程序内导航，支持 navigateTo、redirectTo、reLaunch、switchTab 和 navigateBack。若 waitMs 阶段超时，错误信息会附带 currentRoute 供你判断导航是否实际已生效。\n\n⚠️ waitMs 是 dumb sleep — 时序敏感场景（onShow 内有鉴权 / SSE 初始化 / 异步 setData）请把 waitMs 设小一点（如 500ms 给 transition 留白），然后用 `mp_pollUntil` 等具体条件就绪。\n\n模板：\n```\nmp_pollUntil({\n  predicate: \"function() { var p = getCurrentPages().pop(); return p && p.data.ready === true; }\",\n  timeoutMs: 10000,\n  pollIntervalMs: 200\n})\n```",
     parameters: navigateParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -657,7 +659,7 @@ function createCallWxMethodTool(manager: WeappAutomatorManager): AnyTool {
 function createEvaluateTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_evaluate",
-    description: "向小程序 AppService 注入并执行函数代码，返回执行结果。适合在 page.data 不稳定时做显式调试读取。可选 timeoutMs 覆盖默认 15s 超时（最长 600s），用于长耗时异步等待。注意：避免在函数体内遍历完整 prototype 链或做复杂反射，可能命中 SDK wrapper 抛 'Cannot read property is of undefined' 之类错误；保持函数体最小化。",
+    description: "向小程序 AppService 注入并执行函数代码，返回执行结果。适合在 page.data 不稳定时做显式调试读取 / 状态机断言 / 内联绕过 modal。可选 timeoutMs 覆盖默认 15s 超时（最长 600s），用于长耗时异步等待。⚠️ 等任意条件请用 `mp_pollUntil`（内置 predicate 轮询，比 evaluate + waitTimeout + evaluate 手写循环更稳）。注意：避免在函数体内遍历完整 prototype 链或做复杂反射，可能命中 SDK wrapper 抛 'Cannot read property is of undefined' 之类错误；保持函数体最小化。",
     parameters: evaluateParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {

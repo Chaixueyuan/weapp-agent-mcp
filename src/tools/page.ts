@@ -12,11 +12,15 @@ import {
   toTextResult,
   resolveElement,
   parseSelectorWithIndex,
+  pickByPaths,
+  clampJsonByBytes,
   withUserErrorResult,
 } from "./common.js";
 
 const getPageDataParameters = connectionContainerSchema.extend({
   path: z.string().trim().min(1).optional(),
+  paths: z.array(z.string().trim().min(1)).optional(),
+  maxBytes: z.coerce.number().int().positive().optional().default(50000),
 });
 
 const setPageDataParameters = connectionContainerSchema.extend({
@@ -117,7 +121,7 @@ export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
 function createGetElementTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_getElement",
-    description: "通过选择器获取页面元素，相当于 page.$(selector)。返回每个元素的摘要信息（tagName、text、value、size、offset）；设置 withWxml 为 true 可额外返回元素的完整 outerWxml。支持 [index=N] 语法选择第 N 个元素。⚠️ 自定义组件内部的元素 page_* 查不到（page.$ 不穿透 component shadow），需用 element_getInnerElement(s) + innerSelector，或在 element_* 工具里用 selector(组件) + innerSelector(内部) 跨组件查询。",
+    description: "通过选择器获取页面元素，相当于 page.$(selector)。返回每个元素的摘要信息（tagName、text、value、size、offset）；设置 withWxml 为 true 可额外返回元素的完整 outerWxml。支持 [index=N] 语法选择第 N 个元素。⚠️ 单次查询，元素不存在直接抛错——若元素是 setData 之后异步渲染、SSE 流式生成、navigateTo 之后未稳定的场景，请先调 `page_waitElement` 等到再调本工具。⚠️ 自定义组件内部的元素 page_* 查不到（page.$ 不穿透 component shadow），需用 element_getInnerElement(s) + innerSelector，或在 element_* 工具里用 selector(组件) + innerSelector(内部) 跨组件查询。",
     parameters: getElementParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -260,7 +264,7 @@ function createGetElementsTool(manager: WeappAutomatorManager): AnyTool {
 function createWaitForElementTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_waitElement",
-    description: "等待指定选择器的元素出现在页面上。支持 [index=N] 语法选择第 N 个元素。增强版：增加了超时和重试间隔参数。",
+    description: "等待指定选择器的元素出现在页面上。支持 [index=N] 语法选择第 N 个元素。增强版：增加了超时和重试间隔参数。⚠️ 等任意条件（如 page.data 字段变化、SSE 流式状态、aiStatus='completed'）请改用 `mp_pollUntil`（通用 predicate 轮询）。",
     parameters: waitForElementParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -314,7 +318,9 @@ function createWaitForElementTool(manager: WeappAutomatorManager): AnyTool {
             await new Promise(resolve => setTimeout(resolve, retryInterval));
           }
 
-          throw new UserError(`等待元素 "${args.selector}" 超时 (${timeout}ms)。`);
+          throw new UserError(
+            `等待元素 "${args.selector}" 超时 (${timeout}ms)。可能原因：1) selector 含模板插值（如 \`toast-{{variant}}\`），渲染后字面值不同 — 调 \`page_getWxml\` 看实际合成 class；2) 元素在自定义组件 shadow 内 — page.$ 不穿透，改用 \`element_getInnerElement(s)\` + innerSelector；3) 元素真的没渲染 — 调 \`page_snapshot(withElements=true)\` 列出当前 DOM 摘要，或用 \`mp_pollUntil\` 等具体的 page.data 状态；4) timeout 太短 — 默认 5000ms，SSE/异步场景调大到 10000+。`
+          );
         }
       );
       }),
@@ -422,7 +428,7 @@ function createWaitForRouteTool(manager: WeappAutomatorManager): AnyTool {
 function createWaitForTimeoutTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_waitTimeout",
-    description: "等待指定的毫秒数。",
+    description: "等待指定的毫秒数（dumb sleep）。⚠️ 仅用于「渲染 tick 留白」等无明确信号的极短等待；等任意条件（page.data 变化 / SSE done / 异步状态切换）请改用 `mp_pollUntil`，否则容易出现时间太短抓空 / 时间太长拖慢测试。",
     parameters: waitForTimeoutParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -679,23 +685,42 @@ function createPageSnapshotTool(manager: WeappAutomatorManager): AnyTool {
 function createGetPageDataTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_getData",
-    description: "获取当前页面的数据对象，可选择指定子数据路径。",
+    description:
+      "获取当前页面的数据对象。三种模式：1) 无参 → 返回整树（小心 token 限制）；2) 传 path → 返回单个子路径；3) 传 paths[] → 按多路径投影（**推荐用于大对象**，支持 `conversationHistory[*].aiStatus` 这种 wildcard 语法、`conversationHistory.length`、`conversationHistory[-1].aiStatus` 负索引）。默认 maxBytes=50000 字节硬截断，超出返回 truncated=true 标识。paths 与 path 互斥时 paths 优先。",
     parameters: getPageDataParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
       const args = getPageDataParameters.parse(rawArgs ?? {});
+      const usePaths = Array.isArray(args.paths) && args.paths.length > 0;
       return manager.withPage<ContentResult>(
         context.log,
         { overrides: args.connection },
         async (page) => {
           const data = await manager.withRequestTimeout(
-            () => page.data(args.path),
-            { description: `读取页面数据${args.path ? ` (${args.path})` : ""}` }
+            () => page.data(usePaths ? undefined : args.path),
+            { description: `读取页面数据${usePaths ? ` (paths=${args.paths!.length})` : args.path ? ` (${args.path})` : ""}` }
           );
+
+          let resultValue: unknown;
+          let missing: string[] | null = null;
+          if (usePaths) {
+            const picked = pickByPaths(data, args.paths!);
+            resultValue = picked.values;
+            missing = picked.missing;
+          } else {
+            resultValue = toSerializableValue(data);
+          }
+
+          const clamped = clampJsonByBytes(resultValue, args.maxBytes);
           return toTextResult(
             formatJson({
               path: args.path ?? null,
-              data: toSerializableValue(data),
+              paths: args.paths ?? null,
+              missing,
+              truncated: clamped.truncated,
+              bytes: clamped.bytes,
+              maxBytes: args.maxBytes,
+              data: clamped.value,
             })
           );
         }
