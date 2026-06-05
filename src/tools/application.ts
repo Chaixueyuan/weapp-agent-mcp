@@ -610,7 +610,7 @@ function createNavigateTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_navigate",
     description:
-      "在小程序内导航并返回导航后的 activePage(path+query)。**返回的 activePage 是这次导航 resolve 的真实当前页,可直接信任,无需再调 mp_currentPage 或 mp_evaluate 交叉校验路由。**\n\ntransition 怎么选:\n- navigateTo(默认):压栈打开新页,可 navigateBack 返回。\n- redirectTo:关掉当前页再打开,不入栈。\n- reLaunch:关掉所有页栈后打开(回首页 / 重置状态用)。\n- switchTab:**仅用于 app.json tabBar 里注册的 tab 页,且不支持 query**;跳非 tabBar 页会报 'can not switch to no-tabBar page' —— 这种情况改用 navigateTo。(不确定哪些是 tab 页时,custom-tab-bar 项目 tabBar 可能为空,需查 app.json 的 tabBar.list 或 pages。)\n- navigateBack:返回上一页,此时 path 可省略;其余 transition 都必须传 path。\n\nquery 用 query 参数传(对象,如 {id:'1'}),会自动拼到 url,不要手动拼进 path;switchTab 除外。\n\n⚠️ waitMs 是 dumb sleep,不是等条件。时序敏感场景(onShow 鉴权 / SSE 初始化 / 异步 setData)建议 waitMs 留小(如 500 给 transition 过渡),再用 mp_pollUntil 等具体条件就绪。若 waitMs 阶段超时,错误里会带 currentRoute 帮你判断导航是否其实已生效。",
+      "在小程序内导航并返回导航后的 activePage(path+query)。**返回的 activePage 是这次导航 resolve 的真实当前页,可直接信任,无需再调 mp_currentPage 或 mp_evaluate 交叉校验路由。**\n\ntransition 怎么选:\n- navigateTo(默认):压栈打开新页,可 navigateBack 返回。\n- redirectTo:关掉当前页再打开,不入栈。\n- reLaunch:关掉所有页栈后打开(回首页 / 重置状态用)。\n- switchTab:**仅用于 app.json tabBar 里注册的 tab 页,且不支持 query**;跳非 tabBar 页会报 'can not switch to no-tabBar page' —— 这种情况改用 navigateTo。(不确定哪些是 tab 页时,custom-tab-bar 项目 tabBar 可能为空,需查 app.json 的 tabBar.list 或 pages。)\n- navigateBack:返回上一页,此时**整个省略 path**(切勿传空字符串 \"\"——会被 schema 当作非法 path 拒绝);其余 transition 都必须传 path。\n\nquery 用 query 参数传(对象,如 {id:'1'}),会自动拼到 url,不要手动拼进 path;switchTab 除外。\n\n⚠️ waitMs 是 dumb sleep,不是等条件。时序敏感场景(onShow 鉴权 / SSE 初始化 / 异步 setData)建议 waitMs 留小(如 500 给 transition 过渡),再用 mp_pollUntil 等具体条件就绪。若 waitMs 阶段超时,错误里会带 currentRoute 帮你判断导航是否其实已生效。",
     parameters: navigateParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -1068,7 +1068,12 @@ function createEvaluateTool(manager: WeappAutomatorManager): AnyTool {
               throw error;
             }
             const message = error instanceof Error ? error.message : String(error);
-            throw new UserError(`执行 evaluate 失败: ${message}`);
+            const lower = message.toLowerCase();
+            const channelHint =
+              lower.includes("is not a function") || lower.includes("intermediate value")
+                ? "\n\n⚠️ 若该错误与 functionSource 无关、对任意函数都复现，多半是当前环境的 evaluate 注入通道不可用（常见于部分测试环境 base 库限制），而非函数语法错误。请改用 mp_callWx（调 wx.* API）/ mp_currentPage / page_getData 兜底，不要反复改函数体。"
+                : "";
+            throw new UserError(`执行 evaluate 失败: ${message}${channelHint}`);
           }
 
           return clampedTextResult(
@@ -1123,6 +1128,8 @@ function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
             let lastValue: unknown = undefined;
             let matched = false;
             let lastError: string | null = null;
+            let previousPredicateError: string | null = null;
+            let repeatedPredicateError = 0;
 
             while (Date.now() - startedAt < overall) {
               const remainingBeforePredicate = overall - (Date.now() - startedAt);
@@ -1151,6 +1158,15 @@ function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
               } catch (error) {
                 lastError = error instanceof Error ? error.message : String(error);
                 if (lastError.includes("[REQUEST_TIMEOUT]")) {
+                  break;
+                }
+                // 确定性失败（如 evaluate 注入通道在当前环境不可用）会每轮复现同一错误；
+                // 连续两次完全相同的 predicate 错误即提前短路，不空转满 timeout。
+                repeatedPredicateError =
+                  lastError === previousPredicateError ? repeatedPredicateError + 1 : 1;
+                previousPredicateError = lastError;
+                if (repeatedPredicateError >= 2) {
+                  lastError = `${lastError}（predicate 连续 ${repeatedPredicateError} 次报同一错误，已提前结束轮询；疑似依赖的 evaluate 注入通道不可用，可改用 mp_callWx / mp_currentPage 兜底）`;
                   break;
                 }
               }

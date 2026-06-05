@@ -4079,3 +4079,55 @@ test("page_expectElementText treats null element text as an empty string", async
   assert.equal(payload.pass, true);
   assert.equal(payload.actual, "");
 });
+
+test("mp_evaluate channel-level failures append a fallback hint", async () => {
+  const miniProgram = {
+    evaluate: async () => {
+      throw new Error("(intermediate value) is not a function");
+    },
+  };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(miniProgram, { mode: "connect" }),
+    runSerializedEvaluate: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createApplicationTools(manager as any),
+    "mp_evaluate"
+  ).execute({ functionSource: "() => 1", timeoutMs: 100 }, context);
+
+  assert.equal(result.isError, true);
+  const text = result.content[0].text as string;
+  assert.match(text, /evaluate 注入通道/);
+  assert.match(text, /mp_callWx/);
+});
+
+test("mp_pollUntil short-circuits on a repeated deterministic predicate error", async () => {
+  const manager = new WeappAutomatorManager();
+  let evalCalls = 0;
+  const miniProgram = {
+    evaluate: async () => {
+      evalCalls += 1;
+      throw new Error("(intermediate value) is not a function");
+    },
+  };
+  (manager as any).withMiniProgram = async (
+    _log: unknown,
+    _options: unknown,
+    handler: any
+  ) => handler(miniProgram, { mode: "connect" });
+
+  const result = await toolByName(createApplicationTools(manager), "mp_pollUntil").execute(
+    { predicate: "() => true", timeoutMs: 5000, pollIntervalMs: 1 },
+    context
+  );
+  const payload = parseTextResult(result);
+
+  assert.equal(result.isError, true);
+  assert.equal(payload.matched, false);
+  // 连续 2 次相同错误即短路，不空转到 5000ms timeout。
+  assert.equal(payload.iterations, 2);
+  assert.equal(evalCalls, 2);
+  assert.match(payload.lastPredicateError, /提前结束轮询/);
+});

@@ -158,7 +158,7 @@ export function createPageTools(manager: WeappAutomatorManager): AnyTool[] {
 function createGetElementTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_getElement",
-    description: "通过选择器获取单个页面元素，相当于 page.$(selector)。返回该元素摘要 {tagName,text,value,size,offset}（取不到的字段为 null，不代表元素不存在）；withWxml=true 额外返回完整 outerWxml。支持 `selector[index=N]` 选第 N 个（0 基，仅作用于 selector，innerSelector 内不支持下标）。⚠️ 单次查询，元素不存在直接抛错——若元素来自 setData 后异步渲染 / SSE 流式 / navigateTo 未稳定，先用 `page_waitElement` 等到再调本工具；等任意非元素条件（page.data 字段变化等）用 `mp_pollUntil`。⚠️ page.$ 不穿透自定义组件；组件内部元素用 selector(组件)+innerSelector，或 element_getInnerElement(s)；本工具的 innerSelector 同样是「在已匹配元素内部再查一层」。结果超过 maxBytes（默认 50000B）返回 {selector,index,truncated,bytes,maxBytes,note,data} 包装——多由 withWxml 引起，可关掉它或调大 maxBytes。",
+    description: "通过选择器获取单个页面元素，相当于 page.$(selector)。返回该元素摘要 {tagName,text,value,size,offset}（取不到的字段为 null，不代表元素不存在）；withWxml=true 额外返回完整 outerWxml。支持 `selector[index=N]` 选第 N 个（0 基，仅作用于 selector，innerSelector 内不支持下标）。⚠️ 单次查询，元素不存在直接抛错——若元素来自 setData 后异步渲染 / SSE 流式 / navigateTo 未稳定，先用 `page_waitElement` 等到再调本工具；等任意非元素条件（page.data 字段变化等）用 `mp_pollUntil`。⚠️ page.$ 默认不穿透自定义组件（取决于组件 styleIsolation/addGlobalClass）；组件内部元素用 selector(组件)+innerSelector，或 element_getInnerElement(s)；本工具的 innerSelector 同样是「在已匹配元素内部再查一层」。结果超过 maxBytes（默认 50000B）返回 {selector,index,truncated,bytes,maxBytes,note,data} 包装——多由 withWxml 引起，可关掉它或调大 maxBytes。",
     parameters: getElementParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -219,7 +219,7 @@ function createGetElementTool(manager: WeappAutomatorManager): AnyTool {
 function createGetElementsTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_getElements",
-    description: "通过选择器获取页面元素数组，相当于 page.$$(selector)。返回 {selector,count,totalCount,limited,elements:[{index,tagName,text,value,size,offset}]}；limit 默认/最大 100，避免大页面一次汇总所有元素卡住连接；totalCount 是总命中数，count 是实际返回数。无匹配时返回 count:0 的空列表（不抛错，这是与会抛错的 page_getElement 的关键区别——批量/计数用本工具，单个必存在的元素用 page_getElement）。withWxml=true 给每个元素附完整 outerWxml。支持 `selector[index=N]`（0 基）只取第 N 个。⚠️ page.$$ 不穿透自定义组件；组件内部元素用 element_getInnerElements，或 element_* 工具的 selector(组件)+innerSelector(内部)。结果超过 maxBytes（默认 50000B）返回截断包装。",
+    description: "通过选择器获取页面元素数组，相当于 page.$$(selector)。返回 {selector,count,totalCount,limited,elements:[{index,tagName,text,value,size,offset}]}；limit 默认/最大 100，避免大页面一次汇总所有元素卡住连接；totalCount 是总命中数，count 是实际返回数。无匹配时返回 count:0 的空列表（不抛错，这是与会抛错的 page_getElement 的关键区别——批量/计数用本工具，单个必存在的元素用 page_getElement）。withWxml=true 给每个元素附完整 outerWxml。支持 `selector[index=N]`（0 基）只取第 N 个。⚠️ page.$$ 默认不穿透自定义组件（是否穿透取决于组件 styleIsolation/addGlobalClass，可用 page_getElements 看实际命中数判断）；组件内部元素用 element_getInnerElements，或 element_* 工具的 selector(组件)+innerSelector(内部)。结果超过 maxBytes（默认 50000B）返回截断包装。",
     parameters: getElementsParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -377,7 +377,7 @@ function createWaitForElementTool(manager: WeappAutomatorManager): AnyTool {
           }
 
           throw new UserError(
-            `等待元素 "${args.selector}" 超时 (${timeout}ms)。${lastError ? `⚠️ 轮询期间持续报错（很可能是连接级故障，而非元素缺失）：${lastError}。建议先调 mp_healthCheck，必要时 mp_recoverConnection。` : "可能原因：1) selector 含模板插值（如 `toast-{{variant}}`），渲染后字面值不同 — 调 `page_snapshot(selectors=[...], withWxml=true)` 看实际合成 class；2) 元素在自定义组件 shadow 内 — page.$ 不穿透，改用 `element_getInnerElement(s)` + innerSelector；3) 元素真的没渲染 — 调 `page_snapshot(withElements=true)` 列出当前 DOM 摘要，或用 `mp_pollUntil` 等具体的 page.data 状态；4) timeout 太短 — 默认 5000ms，SSE/异步场景调大到 10000+。"}`
+            `等待元素 "${args.selector}" 超时 (${timeout}ms)。${lastError ? `⚠️ 轮询期间持续报错（很可能是连接级故障，而非元素缺失）：${lastError}。建议先调 mp_healthCheck，必要时 mp_recoverConnection。` : "可能原因：1) selector 含模板插值（如 `toast-{{variant}}`），渲染后字面值不同 — 调 `page_snapshot(selectors=[...], withWxml=true)` 看实际合成 class；2) 元素在自定义组件 shadow 内 — page.$ 默认不穿透（取决于 styleIsolation/addGlobalClass），改用 `element_getInnerElement(s)` + innerSelector；3) 元素真的没渲染 — 调 `page_snapshot(withElements=true)` 列出当前 DOM 摘要，或用 `mp_pollUntil` 等具体的 page.data 状态；4) timeout 太短 — 默认 5000ms，SSE/异步场景调大到 10000+。"}`
           );
         }
       );
@@ -582,7 +582,7 @@ function createExpectRouteTool(manager: WeappAutomatorManager): AnyTool {
 function createExpectVisibleTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_expectVisible",
-    description: "一次性断言选择器能否在页面定位到元素（基于 page.$$ 命中数 > 0,或带 [index=N] 时该索引在范围内）。⚠️ 只判「存在/可定位」,不检查视觉可见性（不看 display/opacity/视口）。不轮询、不抛错——结果在返回的 {pass,expected:true,actual,snapshot:{selector,count,index}} 的 `pass` 里。⚠️ page.$$ 不穿透自定义组件,组件内部元素会误判 pass:false,此类用 element_getInnerElements 校验。支持 `selector[index=N]`（0 基）。",
+    description: "一次性断言选择器能否在页面定位到元素（基于 page.$$ 命中数 > 0,或带 [index=N] 时该索引在范围内）。⚠️ 只判「存在/可定位」,不检查视觉可见性（不看 display/opacity/视口）。不轮询、不抛错——结果在返回的 {pass,expected:true,actual,snapshot:{selector,count,index}} 的 `pass` 里。⚠️ page.$$ 默认不穿透自定义组件（是否穿透取决于组件 styleIsolation/addGlobalClass，可用 page_getElements 看实际命中数判断）,组件内部元素会误判 pass:false,此类用 element_getInnerElements 校验。支持 `selector[index=N]`（0 基）。",
     parameters: expectVisibleParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -685,7 +685,7 @@ function createExpectElementTextTool(manager: WeappAutomatorManager): AnyTool {
 function createExpectCountTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_expectCount",
-    description: "一次性断言匹配选择器的元素数量是否「精确等于」expected（基于 page.$$,不是 >=）。支持 `selector[index=N]`，此时命中该索引计 1、越界计 0。不抛错——结果在返回的 {pass,expected,actual,snapshot:{selector,index}} 的 `pass` 里,失败看 `actual`。⚠️ page.$$ 不穿透自定义组件,组件内部的元素不计入,会偏少。",
+    description: "一次性断言匹配选择器的元素数量是否「精确等于」expected（基于 page.$$,不是 >=）。支持 `selector[index=N]`，此时命中该索引计 1、越界计 0。不抛错——结果在返回的 {pass,expected,actual,snapshot:{selector,index}} 的 `pass` 里,失败看 `actual`。⚠️ page.$$ 默认不穿透自定义组件（是否穿透取决于组件 styleIsolation/addGlobalClass，可用 page_getElements 看实际命中数判断）,组件内部的元素不计入,会偏少。",
     parameters: expectCountParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -779,7 +779,7 @@ function createExpectDataTool(manager: WeappAutomatorManager): AnyTool {
 function createPageSnapshotTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "page_snapshot",
-    description: "返回当前页面的轻量结构快照,聚合 route、query、指定 data 路径、关键选择器的元素摘要。最适合「不确定页面上有什么」时探查 DOM/状态（page_waitElement 超时排查也会指向它）。返回 {route,query,selectors,elementCount,elementsLimited,processedSelectorCount,elementSummaryLimit,elements:[{selector,index,tagName,text,value,size,offset}],data?,hint?}。⚠️ 不传 selectors/dataPaths/withData 时只返回 route——这不代表页面为空,会附 hint 提示补参。withData=true 会把整棵 data 树塞进 data['$']（token 炸弹,大对象改用 dataPaths 按字段投影）。limit 默认 10,限制每个 selector 返回的元素数；所有 selector 合计最多汇总 100 个元素摘要，达到上限时 elementsLimited=true。整个快照超过 maxBytes（默认 50000B）返回 truncated 包装。单个已知字段用 page_getData,单个元素用 page_getElement。同样不穿透自定义组件。",
+    description: "返回当前页面的轻量结构快照,聚合 route、query、指定 data 路径、关键选择器的元素摘要。最适合「不确定页面上有什么」时探查 DOM/状态（page_waitElement 超时排查也会指向它）。返回 {route,query,selectors,elementCount,elementsLimited,processedSelectorCount,elementSummaryLimit,elements:[{selector,index,tagName,text,value,size,offset}],data?,hint?}。⚠️ 不传 selectors/dataPaths/withData 时只返回 route——这不代表页面为空,会附 hint 提示补参。withData=true 会把整棵 data 树塞进 data['$']（token 炸弹,大对象改用 dataPaths 按字段投影）。limit 默认 10,限制每个 selector 返回的元素数；所有 selector 合计最多汇总 100 个元素摘要，达到上限时 elementsLimited=true。整个快照超过 maxBytes（默认 50000B）返回 truncated 包装。单个已知字段用 page_getData,单个元素用 page_getElement。对自定义组件同样默认不穿透（取决于 styleIsolation/addGlobalClass）。",
     parameters: pageSnapshotParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {

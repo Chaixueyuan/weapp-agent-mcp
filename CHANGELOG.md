@@ -23,6 +23,14 @@
 - auto-launch 的 detached cli 子进程在观察窗后解除 stdout/stderr/exit/error 监听并排空管道，消除 per-launch 监听器与缓冲区滞留。
 - 测试：新增截图 fallback 注入体真实执行覆盖（成功 + bridge 不可用失败分支）、陈旧锁抢占与孤儿 tmp 清理、`page_getData` 截断保留 missingPaths、`page_expectElementText` 空文本；放宽 `mp_pollUntil` 预算测试的墙钟阈值以降低 CI 抖动。
 
+### 2026-06-05 dogfooding（全面覆盖测试）反馈改进（0.4.6 内）
+
+- `mp_evaluate` 失败归因：对 `is not a function` / `intermediate value` 这类通道级失败追加提示「疑似 evaluate 注入通道在当前环境不可用，改用 mp_callWx / mp_currentPage / page_getData 兜底」，与「函数语法错」区分（根因为环境 base 库，未改注入机制）。
+- `mp_pollUntil` 确定性失败短路：predicate 连续两次报同一错误即提前结束轮询并附兜底提示，不再空转到 timeout。
+- `element_getData` 选到组件内部普通元素时，报错追加「请改用组件标签选择器（如 feature-card[index=0]）」提示。
+- 文档/描述准确性：`element_getBoundingClientRect` 补充返回 `dataset`/`id` 字段说明（读卡片绑定数据的便捷途径）；`element_getAttributes` 注明对象型 data-* 只能得到 `[object Object]`、需结构化值改用 boundingClientRect.dataset；`page.$`/`page.$$` 的「不穿透自定义组件」改为条件句（取决于 styleIsolation/addGlobalClass）；`mp_navigate` 明确 navigateBack 应整个省略 path（勿传空串）。
+- 测试：新增 `mp_evaluate` 通道级失败提示、`mp_pollUntil` 确定性失败短路两个用例。
+
 ## 2026-05-12（0.4.0）
 
 ### 1. 端口未监听时自动 cli auto 起 IDE（核心痛点修复）

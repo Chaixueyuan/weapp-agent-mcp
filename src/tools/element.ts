@@ -576,8 +576,11 @@ function createGetElementDataTool(manager: WeappAutomatorManager): AnyTool {
               throw error;
             }
             const message = error instanceof Error ? error.message : String(error);
+            const hint = /is not a function/i.test(message)
+              ? "。该 selector 可能选到了组件内部的普通元素（element.data 仅对自定义组件实例有效）；请改用组件标签选择器（如 feature-card[index=0] / custom-tab-bar），而非组件内部的根 class"
+              : "";
             throw new UserError(
-              `读取组件数据（${args.selector}${args.innerSelector ? ` -> ${args.innerSelector}` : ""}）失败: ${message}`
+              `读取组件数据（${args.selector}${args.innerSelector ? ` -> ${args.innerSelector}` : ""}）失败: ${message}${hint}`
             );
           }
           return clampedTextResult(
@@ -945,7 +948,7 @@ function createScrollToTool(manager: WeappAutomatorManager): AnyTool {
 function createGetAttributesTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getAttributes",
-    description: "读取元素的 WXML 特性值(element.attribute(name)),如 ['class','id','data-index']。读 CSS 样式请用 element_getStyles。单个读不到的特性返回 null,全部读取失败则报错。结果超过 maxBytes（默认 50000B）会截断。要读自定义组件内部元素的特性,用 selector 定位组件、innerSelector 定位内部元素。selector 支持 [index=N](仅作用于 selector)。",
+    description: "读取元素的 WXML 特性值(element.attribute(name)),如 ['class','id','data-index']。读 CSS 样式请用 element_getStyles。单个读不到的特性返回 null,全部读取失败则报错。结果超过 maxBytes（默认 50000B）会截断。要读自定义组件内部元素的特性,用 selector 定位组件、innerSelector 定位内部元素。selector 支持 [index=N](仅作用于 selector)。⚠️ 对象型 data-*(如 data-item 绑定了对象)经 WXML attribute 只能拿到字符串 '[object Object]'——需要结构化值请改用 element_getBoundingClientRect 返回的 dataset。",
     parameters: getAttributesParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -1006,7 +1009,7 @@ function createGetAttributesTool(manager: WeappAutomatorManager): AnyTool {
 function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_getBoundingClientRect",
-    description: "获取元素相对视口的边界矩形(left/top/width/height/right/bottom),为 CSS transform 变换后的实际渲染尺寸与位置。支持跨组件查询:selector 设为组件选择器、innerSelector 设为内部元素选择器(内部用 >>> 穿透,比 selectComponent 更可靠)。仅支持 ID 选择器、类选择器。selector 支持 [index=N],但底层 SelectorQuery 无法可靠表达“第 N 个父元素里的 innerSelector”,因此 [index=N] 不能与 innerSelector 同时使用。选择器查询未返回矩形时抛错；微信 SelectorQuery 无法可靠区分元素不存在与 display:none。",
+    description: "获取元素相对视口的边界矩形(left/top/width/height/right/bottom),为 CSS transform 变换后的实际渲染尺寸与位置。返回还包含 `dataset`(元素完整 data-* 绑定对象,含对象型值)与 `id`——这是读取卡片/组件绑定数据(如 plateCode/path/cardStyle)的便捷途径,优于 element_getAttributes(后者对对象型 data-* 只能拿到 '[object Object]')。支持跨组件查询:selector 设为组件选择器、innerSelector 设为内部元素选择器(内部用 >>> 穿透,比 selectComponent 更可靠)。仅支持 ID 选择器、类选择器。selector 支持 [index=N],但底层 SelectorQuery 无法可靠表达“第 N 个父元素里的 innerSelector”,因此 [index=N] 不能与 innerSelector 同时使用。选择器查询未返回矩形时抛错；微信 SelectorQuery 无法可靠区分元素不存在与 display:none。",
     parameters: getBoundingClientRectParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
