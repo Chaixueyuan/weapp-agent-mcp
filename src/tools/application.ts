@@ -110,8 +110,10 @@ const evaluateParameters = connectionContainerSchema.extend({
 
 const pollUntilParameters = connectionContainerSchema
   .extend({
-    predicate: z.string().trim().min(1),
+    predicate: z.string().trim().min(1).optional(),
     predicateArgs: z.array(z.unknown()).max(100).optional(),
+    dataPath: z.string().trim().min(1).optional(),
+    dataEquals: z.unknown().optional(),
     action: z.string().trim().min(1).optional(),
     actionArgs: z.array(z.unknown()).max(100).optional(),
     pollIntervalMs: numberish(z.number().int().positive().max(60000)).optional().default(200),
@@ -121,6 +123,23 @@ const pollUntilParameters = connectionContainerSchema
     maxBytes: maxBytesSchema.optional().default(50000),
   })
   .superRefine((value, context) => {
+    const hasPredicate = typeof value.predicate === "string";
+    const hasDataPath = typeof value.dataPath === "string";
+    if (hasPredicate === hasDataPath) {
+      context.addIssue({
+        code: "custom",
+        path: ["predicate"],
+        message:
+          "必须且只能提供 predicate(evaluate 注入函数) 或 dataPath(直接轮询 page.data 路径) 其一",
+      });
+    }
+    if (!hasPredicate && value.predicateArgs !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["predicateArgs"],
+        message: "predicateArgs requires predicate",
+      });
+    }
     if (!value.action && value.actionArgs !== undefined) {
       context.addIssue({
         code: "custom",
@@ -1100,7 +1119,7 @@ function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_pollUntil",
     description:
-      "**通用 wait-for-condition / waitData 工具**:轮询执行 predicate(返回任意真值即命中)直到命中或超时,可选在命中后执行 action,并按 snapshotPaths 拍 before/after 快照。典型场景:等 page.data 某字段变化(predicate 写 `function(){ return getCurrentPages().pop().data.conversationHistory.length === 1 }`)、等异步状态切换、等 SSE 流式中段、时序敏感打断。\n\npredicate / action 是 function 源码字符串,跑在 AppService(可用 getCurrentPages、wx 等);predicateArgs / actionArgs 是按顺序展开给这两个函数的入参数组。轮询由 server 端管理,重连不留脏 setInterval。\n\nsnapshotPaths 走点路径取值,支持 [N] 下标、负索引、[*] 通配(如 `conversationHistory[*].aiStatus`、`list.length`);before = predicate 命中时刻的 page.data,after = action 跑完且等 snapshotAfterMs 后的 page.data(snapshotAfterMs 给异步 setData 留时间,默认 0,上限 60000,仅在传 snapshotPaths 时有效)。结果超过 maxBytes(默认 50000B)会截断。\n\n注意:timeoutMs(默认 15s,上限 600s)是 predicate、action、等待和快照的整体预算;若比单次 evaluate 还短,可能只跑 1 次 predicate 就超时。",
+      "**通用 wait-for-condition / waitData 工具**:轮询执行 predicate(返回任意真值即命中)直到命中或超时,可选在命中后执行 action,并按 snapshotPaths 拍 before/after 快照。典型场景:等 page.data 某字段变化(predicate 写 `function(){ return getCurrentPages().pop().data.conversationHistory.length === 1 }`)、等异步状态切换、等 SSE 流式中段、时序敏感打断。\n\npredicate / action 是 function 源码字符串,跑在 AppService(可用 getCurrentPages、wx 等);predicateArgs / actionArgs 是按顺序展开给这两个函数的入参数组。轮询由 server 端管理,重连不留脏 setInterval。\n\n**predicate 与 dataPath 二选一**:若该环境 evaluate 注入通道不可用(对任意函数都报 'is not a function'),改用 `dataPath` 直接轮询 page.data 的某条路径(SDK 端单路径投影,**不走 evaluate**)——`dataEquals` 省略时按真值命中、给了则与该值 deep-equal 命中(可精确等 false/0/null)。注意:命中后的 `action` 仍走 evaluate,evaluate 不可用时只用 dataPath+snapshotPaths(snapshot 读 page.data、不依赖 evaluate)。\n\nsnapshotPaths 走点路径取值,支持 [N] 下标、负索引、[*] 通配(如 `conversationHistory[*].aiStatus`、`list.length`);before = predicate 命中时刻的 page.data,after = action 跑完且等 snapshotAfterMs 后的 page.data(snapshotAfterMs 给异步 setData 留时间,默认 0,上限 60000,仅在传 snapshotPaths 时有效)。结果超过 maxBytes(默认 50000B)会截断。\n\n注意:timeoutMs(默认 15s,上限 600s)是 predicate、action、等待和快照的整体预算;若比单次 evaluate 还短,可能只跑 1 次 predicate 就超时。",
     parameters: pollUntilParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -1109,6 +1128,12 @@ function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
         const actionArgs = args.actionArgs ?? [];
         const interval = args.pollIntervalMs;
         const overall = args.timeoutMs;
+        const usesDataPath = typeof args.dataPath === "string";
+        // 区分"未传 dataEquals"(按真值命中) 与"传了 dataEquals: false/0/null"(deep-equal 命中)。
+        const hasDataEquals =
+          rawArgs != null &&
+          typeof rawArgs === "object" &&
+          Object.prototype.hasOwnProperty.call(rawArgs, "dataEquals");
 
         return manager.withMiniProgram<ContentResult>(
           context.log,
@@ -1138,22 +1163,51 @@ function createPollUntilTool(manager: WeappAutomatorManager): AnyTool {
               }
               iterations++;
               try {
-                lastValue = await manager.runSerializedEvaluate(
-                  () =>
-                    miniProgram.evaluate(
-                      runFunctionSourceInAppService,
-                      args.predicate,
-                      predicateArgs
-                    ),
-                  {
-                    description: "执行 pollUntil predicate",
-                    timeoutMs: Math.min(remainingBeforePredicate, 15000),
+                if (usesDataPath) {
+                  // 非 evaluate 兜底：直接轮询 page.data(path)（SDK 端单路径投影），
+                  // 在 evaluate 注入通道不可用的环境里仍能"等 data 条件就绪"。
+                  const page = await readCurrentPage(
+                    manager,
+                    miniProgram,
+                    "pollUntil 读取当前页面",
+                    Math.min(remainingBeforePredicate, 15000)
+                  );
+                  if (!page) {
+                    throw new Error("当前没有活动页面，无法读取 page.data");
                   }
-                );
-                lastError = null;
-                if (lastValue) {
-                  matched = true;
-                  break;
+                  lastValue = await manager.withRequestTimeout(
+                    () => page.data(args.dataPath!),
+                    {
+                      description: "pollUntil 轮询 page.data 路径",
+                      timeoutMs: Math.min(remainingBeforePredicate, 15000),
+                    }
+                  );
+                  lastError = null;
+                  const hit = hasDataEquals
+                    ? areSerializableValuesEqual(lastValue, args.dataEquals)
+                    : Boolean(lastValue);
+                  if (hit) {
+                    matched = true;
+                    break;
+                  }
+                } else {
+                  lastValue = await manager.runSerializedEvaluate(
+                    () =>
+                      miniProgram.evaluate(
+                        runFunctionSourceInAppService,
+                        args.predicate!,
+                        predicateArgs
+                      ),
+                    {
+                      description: "执行 pollUntil predicate",
+                      timeoutMs: Math.min(remainingBeforePredicate, 15000),
+                    }
+                  );
+                  lastError = null;
+                  if (lastValue) {
+                    matched = true;
+                    break;
+                  }
                 }
               } catch (error) {
                 lastError = error instanceof Error ? error.message : String(error);

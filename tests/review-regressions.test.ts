@@ -4192,3 +4192,73 @@ test("slim connection schema still rejects unknown sub-fields before opening a s
   assert.match(bad.content[0].text, /Invalid parameters/);
   assert.equal(sessionCalls, 0);
 });
+
+test("mp_pollUntil supports a non-evaluate dataPath predicate", async () => {
+  let evaluateCalls = 0;
+  let dataReads = 0;
+  const page = {
+    data: async (_path: string) => {
+      dataReads += 1;
+      return dataReads >= 2 ? "ready" : undefined; // 第二轮才就绪
+    },
+  };
+  const miniProgram = {
+    currentPage: async () => page,
+    evaluate: async () => {
+      evaluateCalls += 1;
+      throw new Error("must not use evaluate in dataPath mode");
+    },
+  };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(miniProgram, { mode: "connect" }),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createApplicationTools(manager as any),
+    "mp_pollUntil"
+  ).execute({ dataPath: "status", timeoutMs: 5000, pollIntervalMs: 1 }, context);
+  const payload = parseTextResult(result);
+
+  assert.equal(payload.matched, true);
+  assert.equal(payload.finalPredicateValue, "ready");
+  assert.equal(evaluateCalls, 0); // 完全不走 evaluate
+});
+
+test("mp_pollUntil dataPath matches a falsy dataEquals via deep-equal", async () => {
+  const page = { data: async () => false };
+  const miniProgram = { currentPage: async () => page };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(miniProgram, { mode: "connect" }),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createApplicationTools(manager as any),
+    "mp_pollUntil"
+  ).execute(
+    { dataPath: "isLoading", dataEquals: false, timeoutMs: 5000, pollIntervalMs: 1 },
+    context
+  );
+  const payload = parseTextResult(result);
+
+  // dataEquals:false 必须按 deep-equal 命中 false，而不是被当作"未命中"空转到 timeout。
+  assert.equal(payload.matched, true);
+});
+
+test("mp_pollUntil requires exactly one of predicate or dataPath", async () => {
+  const tool = toolByName(createApplicationTools({} as any), "mp_pollUntil");
+
+  const neither = await tool.execute({ timeoutMs: 100 }, context);
+  assert.equal(neither.isError, true);
+  assert.match(neither.content[0].text, /Invalid parameters/);
+
+  const both = await tool.execute(
+    { predicate: "() => true", dataPath: "x", timeoutMs: 100 },
+    context
+  );
+  assert.equal(both.isError, true);
+  assert.match(both.content[0].text, /Invalid parameters/);
+});

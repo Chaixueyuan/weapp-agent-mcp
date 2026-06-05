@@ -31,6 +31,14 @@
 - 文档/描述准确性：`element_getBoundingClientRect` 补充返回 `dataset`/`id` 字段说明（读卡片绑定数据的便捷途径）；`element_getAttributes` 注明对象型 data-* 只能得到 `[object Object]`、需结构化值改用 boundingClientRect.dataset；`page.$`/`page.$$` 的「不穿透自定义组件」改为条件句（取决于 styleIsolation/addGlobalClass）；`mp_navigate` 明确 navigateBack 应整个省略 path（勿传空串）。
 - 测试：新增 `mp_evaluate` 通道级失败提示、`mp_pollUntil` 确定性失败短路两个用例。
 
+### 2026-06-05 第二份 dogfooding（能力测试总结）反馈改进（0.4.6 内）
+
+- **O3** `mp_pollUntil` 新增非 evaluate 兜底模式：`dataPath`(+ 可选 `dataEquals`) 直接轮询 `page.data(path)`（SDK 端单路径投影，不走 evaluate），用于 evaluate 注入通道不可用的环境里仍能"等 data 条件就绪"；`dataEquals` 省略按真值命中、给了则 deep-equal 命中（可精确等 false/0/null）。`predicate` 与 `dataPath` 二选一。
+- **O9** 瘦身每个工具的 connection schema：`connection` 字段对外 emit 成带字段指引的不透明 object，不再把 15 字段内联进 44 个工具的 JSON schema（实测单工具 schema 减半、合计省 ~24KB/tools-list）；用 `z.record().transform()` 在 parse 时仍走严格校验，"开 session 前拒绝未知 connection 子字段"的契约不变。
+- **O1** `element_getBoundingClientRect`：新增 `maxBytes` 护栏（避免大 dataset 撑爆上下文）；传 tag 选择器时提前给清晰报错（仅支持 class/id，建议改用 element_getData），不再落到底层 `Element not found for selectAll`。
+- **O4** `mp_callWx` 描述补充：evaluate 注入通道个别环境不可用时，改用 page_getData/page_setData/page_callMethod 兜底。
+- 测试：dataPath 非 evaluate 命中 + dataEquals:false deep-equal + predicate/dataPath 互斥、boundingClientRect tag 报错 + maxBytes 截断、connection 瘦身后仍拒未知子字段。
+
 ## 2026-05-12（0.4.0）
 
 ### 1. 端口未监听时自动 cli auto 起 IDE（核心痛点修复）
