@@ -176,6 +176,7 @@ const getBoundingClientRectParameters = connectionContainerSchema
   .extend({
     selector: z.string().trim().min(1),
     innerSelector: z.string().trim().min(1).optional(),
+    maxBytes: maxBytesSchema.optional().default(50000),
   })
   .superRefine((value, context) => {
     if (value.innerSelector && parseSelectorWithIndex(value.selector)) {
@@ -1019,6 +1020,19 @@ function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyToo
       const baseSelector = parsed ? parsed.baseSelector : selector;
       const indexHint = parsed ? parsed.index : -1;
 
+      // wx.createSelectorQuery 只认 class / id 选择器；纯标签选择器(如 feature-card)会落到
+      // "Element not found for selectAll" 这类与限制脱节的报错。提前给出可操作的清晰提示。
+      const taglikeSelector = !/[.#]/.test(baseSelector)
+        ? baseSelector
+        : innerSelector && !/[.#]/.test(innerSelector)
+        ? innerSelector
+        : null;
+      if (taglikeSelector) {
+        throw new UserError(
+          `element_getBoundingClientRect 仅支持 class / id 选择器，不支持标签选择器 "${taglikeSelector}"（底层 wx.createSelectorQuery 限制）。请改用 .class / #id；要读组件实例数据可改用 element_getData。`
+        );
+      }
+
       return manager.withMiniProgram(
         context.log,
         { overrides: args.connection },
@@ -1095,12 +1109,17 @@ function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyToo
             );
           }
 
-          return toTextResult(
-            formatJson({
+          return clampedTextResult(
+            {
               selector,
               innerSelector: innerSelector ?? null,
               boundingClientRect: toSerializableValue(result),
-            })
+            },
+            args.maxBytes,
+            {
+              identity: { selector, innerSelector: innerSelector ?? null },
+              note: "边界矩形结果(含 dataset)超过 maxBytes 已截断。建议缩小目标或改用 element_getData 读组件实例 data。",
+            }
           );
         }
       );

@@ -4131,3 +4131,42 @@ test("mp_pollUntil short-circuits on a repeated deterministic predicate error", 
   assert.equal(evalCalls, 2);
   assert.match(payload.lastPredicateError, /提前结束轮询/);
 });
+
+test("element_getBoundingClientRect rejects tag selectors with a clear hint", async () => {
+  const result = await toolByName(
+    createElementTools({} as any),
+    "element_getBoundingClientRect"
+  ).execute({ selector: "feature-card" }, context);
+
+  assert.equal(result.isError, true);
+  const text = result.content[0].text as string;
+  assert.match(text, /仅支持 class \/ id 选择器/);
+  assert.match(text, /element_getData/);
+});
+
+test("element_getBoundingClientRect clamps an oversized dataset by maxBytes", async () => {
+  const bigRect = {
+    left: 0,
+    top: 0,
+    width: 1,
+    height: 1,
+    right: 1,
+    bottom: 1,
+    id: "card",
+    dataset: { blob: "y".repeat(5000) },
+  };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler({}, { mode: "connect" }),
+    runSerializedEvaluate: async () => bigRect,
+  };
+
+  const result = await toolByName(
+    createElementTools(manager as any),
+    "element_getBoundingClientRect"
+  ).execute({ selector: ".card", maxBytes: 200 }, context);
+  const payload = parseTextResult(result);
+
+  assert.equal(payload.truncated, true);
+  assert.equal(payload.selector, ".card");
+});

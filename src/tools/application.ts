@@ -1001,7 +1001,7 @@ function createCallWxMethodTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "mp_callWx",
     description:
-      "调用微信小程序 API。method **不带 wx. 前缀**(内部自动拼),例如传 `pageScrollTo` 而非 `wx.pageScrollTo`。args 是按位置依次展开的参数数组:多数 wx API 收单个 options 对象,所以传 `[{ scrollTop: 0, duration: 300 }]`(数组里放那一个 options 对象),而不是裸对象。返回 {method, arguments, result},result 为 API 返回值。\n\n何时用:直接触发 wx.* 能力(滚动、剪贴板、storage 等)。要读 / 改 page.data 或跑任意页面逻辑用 mp_evaluate;要等某条件就绪用 mp_pollUntil。",
+      "调用微信小程序 API。method **不带 wx. 前缀**(内部自动拼),例如传 `pageScrollTo` 而非 `wx.pageScrollTo`。args 是按位置依次展开的参数数组:多数 wx API 收单个 options 对象,所以传 `[{ scrollTop: 0, duration: 300 }]`(数组里放那一个 options 对象),而不是裸对象。返回 {method, arguments, result},result 为 API 返回值。\n\n何时用:直接触发 wx.* 能力(滚动、剪贴板、storage 等)。要读 / 改 page.data 或跑任意页面逻辑用 mp_evaluate(注:个别环境的 evaluate 注入通道不可用、对任意函数都报 'is not a function',此时改用 page_getData / page_setData / page_callMethod 兜底);要等某条件就绪用 mp_pollUntil。",
     parameters: callWxMethodParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
