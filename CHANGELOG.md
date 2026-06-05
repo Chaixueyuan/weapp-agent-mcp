@@ -2,6 +2,10 @@
 
 本文件记录当前 `weapp-agent-mcp` 近期完成的关键改动，重点面向后续交接与维护，而不是面向发布营销文案。项目来源于上游 `weapp-dev-mcp` / `@yfme/weapp-dev-mcp`，当前以独立发布为目标继续演进。
 
+## 2026-06-05（0.4.7）
+
+- 澄清 `connection.port` 语义（issue #3）：它是【自动化端口】（会传给 `cli auto --auto-port`，默认 9420），不是 IDE HTTP 服务端口。工具内部一直用 `--auto-port`（自 v0.4.0），无行为变更；本次仅把提示写清楚——`IDE_HTTP_PORT_NOT_WS` 报错现在直接指出「port 多半传成了 IDE 服务端口，去掉用默认 9420 重试」，`connection.port` 字段说明也标注为自动化端口。
+
 ## 2026-06-04（0.4.6）
 
 - 修复 DevTools 公共截图接口统一报错时无法拿回帧的问题，增加 AppService direct temp-file fallback，并补齐截图通道健康状态、串行与失败短路语义。
