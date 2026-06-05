@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { promises as fsPromises } from "node:fs";
 import http from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -3868,6 +3869,15 @@ test("a stale persisted-state lock is stolen instead of blocking writes", async 
   const staleTime = new Date(Date.now() - 60000);
   await utimes(lockPath, staleTime, staleTime);
 
+  // 监听 rename：锁定 fix #1 走的是"原子 rename 抢占"而非裸 unlink（baseline 行为，
+  // 在单进程下两者结果相同，只有 rename 调用本身能区分修复前后）。
+  const renameCalls: Array<[string, string]> = [];
+  const originalRename = fsPromises.rename;
+  (fsPromises as any).rename = async (from: unknown, to: unknown) => {
+    renameCalls.push([String(from), String(to)]);
+    return (originalRename as any)(from, to);
+  };
+
   try {
     const manager = new WeappAutomatorManager();
     await (manager as any).updatePersistedState((state: any) => {
@@ -3876,9 +3886,15 @@ test("a stale persisted-state lock is stolen instead of blocking writes", async 
 
     const persisted = JSON.parse(await readFile(configFile, "utf8"));
     assert.equal(persisted.lastProjectPath, "/stolen");
+    // 陈旧锁被原子 rename 到 .stolen 抢占（而非基线的裸 unlink）。
+    assert.ok(
+      renameCalls.some(([from, to]) => from === lockPath && to.endsWith(".stolen")),
+      "expected the stale lock to be stolen via an atomic rename to a .stolen path"
+    );
     // 锁在 operation 结束后被释放（finally unlink）。
     await assert.rejects(stat(lockPath));
   } finally {
+    (fsPromises as any).rename = originalRename;
     (WeappAutomatorManager as any).CONFIG_FILE = originalConfigFile;
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -3931,8 +3947,11 @@ test("screenshot fallback executes the injected private_captureScreen bridge", a
   };
 
   const recorded: Array<[boolean, string | null | undefined]> = [];
+  let evaluateTimeoutMs: number | undefined;
   const miniProgram = {
     screenshot: async () => {
+      // 制造可测量的 elapsed，使内层 fallback 预算严格小于外层 timeoutMs。
+      await new Promise((resolve) => setTimeout(resolve, 25));
       throw new Error("fail to capture screenshot");
     },
     // 真正执行注入的函数体（生产里 miniProgram.evaluate(fn)）。
@@ -3943,7 +3962,14 @@ test("screenshot fallback executes the injected private_captureScreen bridge", a
       handler(miniProgram, { mode: "connect" }),
     runSerializedScreenshot: async (_log: unknown, operation: () => Promise<unknown>) =>
       operation(),
-    runSerializedEvaluate: async (operation: () => Promise<unknown>) => operation(),
+    // 捕获第二个 options 参数，断言 fix #4 的剩余预算确实被透传（baseline 会原样传 100）。
+    runSerializedEvaluate: async (
+      operation: () => Promise<unknown>,
+      options?: { timeoutMs?: number }
+    ) => {
+      evaluateTimeoutMs = options?.timeoutMs;
+      return operation();
+    },
     getScreenshotStatus: () => ({ failureStreak: 0, lastScreenshotErrorCode: null }),
     recordScreenshotResult: (ok: boolean, code?: string | null) => {
       recorded.push([ok, code]);
@@ -3962,6 +3988,13 @@ test("screenshot fallback executes the injected private_captureScreen bridge", a
     assert.equal(payload.captureMethod, "direct-temp-file");
     assert.equal(await readFile(screenshotPath, "utf8"), "real-frame");
     assert.deepEqual(recorded, [[true, undefined]]);
+    // fix #4：内层 evaluate 拿到的是「外层预算 - 已耗时」，必 >=1 且 < 外层 100。
+    assert.ok(
+      evaluateTimeoutMs !== undefined &&
+        evaluateTimeoutMs >= 1 &&
+        evaluateTimeoutMs < 100,
+      `expected fallback evaluate budget in [1,100), got ${evaluateTimeoutMs}`
+    );
   } finally {
     (globalThis as any).WeixinJSBridge = savedBridge;
     (globalThis as any).wx = savedWx;
