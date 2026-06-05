@@ -6,19 +6,19 @@
     "url": "https://github.com/Chaixueyuan/weapp-agent-mcp",
     "source": "github"
   },
-  "version": "0.4.5",
+  "version": "0.4.6",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@chaixueyuan/weapp-agent-mcp",
-      "version": "0.4.5",
+      "version": "0.4.6",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "WEAPP_WS_ENDPOINT",
-          "description": "Automation WebSocket endpoint of an already-running WeChat DevTools instance (e.g. ws://localhost:9420). Recommended for the 'connect' flow — open DevTools manually, enable automation in Settings → Security → Service Port, then point the server here.",
+          "description": "Automation WebSocket endpoint for the 'connect' flow (e.g. ws://localhost:9420). When a local endpoint is not listening and auto-launch is enabled, mp_ensureConnection may start DevTools if it can resolve a project.",
           "isRequired": false,
           "format": "string",
           "isSecret": false
@@ -32,7 +32,7 @@
         },
         {
           "name": "WEAPP_PROJECT_PATH",
-          "description": "Path to the Mini Program project directory. Required when using 'launch' mode (the MCP server starts DevTools itself).",
+          "description": "Optional Mini Program project directory used by launch and local auto-launch flows. The server can also resolve a persisted default, a recent project, or the current working directory.",
           "isRequired": false,
           "format": "string",
           "isSecret": false
@@ -47,6 +47,76 @@
         {
           "name": "WEAPP_DEVTOOLS_PORT",
           "description": "Automation websocket port passed to 'cli auto --auto-port' in launch mode (default 9420).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_DEVTOOLS_TIMEOUT",
+          "description": "Milliseconds passed to miniprogram-automator when launching WeChat DevTools.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_AUTO_ACCOUNT",
+          "description": "Optional account passed to miniprogram-automator launch.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "WEAPP_DEVTOOLS_TICKET",
+          "description": "Optional DevTools launch ticket.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "WEAPP_TRUST_PROJECT",
+          "description": "Whether launch mode should trust the project. Accepts true/false, 1/0, yes/no, or on/off.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_DEVTOOLS_ARGS",
+          "description": "Additional whitespace-separated CLI arguments passed during launch.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_DEVTOOLS_CWD",
+          "description": "Optional working directory passed to the DevTools launch process.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_AUTOCLOSE",
+          "description": "Whether to close or disconnect the automator session after each tool call. Accepts true/false, 1/0, yes/no, or on/off.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_AUTOLAUNCH",
+          "description": "Allow mp_ensureConnection to launch local WeChat DevTools with cli auto when the configured local automation port is not listening. Defaults to enabled; set false to disable.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_LAUNCH_TIMEOUT",
+          "description": "Milliseconds to wait for a locally auto-launched automation port (default 45000).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "WEAPP_CONNECT_TIMEOUT",
+          "description": "Milliseconds to wait for an automator websocket connection (default 45000).",
           "isRequired": false,
           "format": "string",
           "isSecret": false

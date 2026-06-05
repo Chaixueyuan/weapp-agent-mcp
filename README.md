@@ -11,7 +11,7 @@
 
 <!-- TODO: 这里放一段 5-10 秒 demo GIF：agent 调用 mp_screenshot + page_expectVisible 完成一次页面巡检。建议 ≤ 1.5MB，命名 docs/demo.gif -->
 
-📖 [Changelog](./CHANGELOG.md) · 🐛 [Issues](https://github.com/Chaixueyuan/weapp-agent-mcp/issues) · 💬 [Discussions](https://github.com/Chaixueyuan/weapp-agent-mcp/discussions)
+📖 [Changelog](https://github.com/Chaixueyuan/weapp-agent-mcp/blob/main/CHANGELOG.md) · 🐛 [Issues](https://github.com/Chaixueyuan/weapp-agent-mcp/issues) · 💬 [Discussions](https://github.com/Chaixueyuan/weapp-agent-mcp/discussions)
 
 `weapp-agent-mcp` 是一个面向 agent 的微信小程序 MCP 服务，基于 [`miniprogram-automator`](https://www.npmjs.com/package/miniprogram-automator) 封装微信开发者工具自动化能力，用于页面调试、元素操作、轻量回归测试与恢复友好型排查。
 
@@ -143,7 +143,7 @@ npm run dev
 - `mp_screenshot` 当前按串行单通道能力设计，不支持并发压测
 - 复杂业务链建议拆成多个短 scenario，而不是一个超长 scenario
 - `page_snapshot`、`mp_screenshot`、长 `mp_runScenario` 在连续复杂操作后可能超时
-- 若出现连续失败，先运行 `mp_healthCheck`，必要时执行 `mp_recoverConnection`
+- 若出现连续失败，先运行 `mp_healthCheck`；仅当 `needsRecovery=true` 时执行 `mp_recoverConnection`
 - 稳定性高度依赖业务页面提供清晰的 `qa-*` selector 或其他稳定定位锚点
 
 ## MCP 客户端集成
@@ -163,7 +163,10 @@ npm run dev
       "mcp__weapp-agent-mcp__mp_screenshot",
       "mcp__weapp-agent-mcp__mp_callWx",
       "mcp__weapp-agent-mcp__mp_evaluate",
+      "mcp__weapp-agent-mcp__mp_pollUntil",
       "mcp__weapp-agent-mcp__mp_getLogs",
+      "mcp__weapp-agent-mcp__mp_runScenario",
+      "mcp__weapp-agent-mcp__mp_generateScenarioReport",
       "mcp__weapp-agent-mcp__mp_currentPage",
       "mcp__weapp-agent-mcp__mp_healthCheck",
       "mcp__weapp-agent-mcp__mp_recoverConnection",
@@ -180,6 +183,7 @@ npm run dev
       "mcp__weapp-agent-mcp__page_expectElementText",
       "mcp__weapp-agent-mcp__page_expectCount",
       "mcp__weapp-agent-mcp__page_expectData",
+      "mcp__weapp-agent-mcp__page_snapshot",
       "mcp__weapp-agent-mcp__page_getData",
       "mcp__weapp-agent-mcp__page_setData",
       "mcp__weapp-agent-mcp__page_callMethod",
@@ -204,20 +208,20 @@ npm run dev
 
 > **注意：** 工具名称格式为 `mcp__<服务器名称>__<工具名称>`，请确保服务器名称与您的 MCP 配置中的名称一致。
 
-### 启动微信开发者工具
+### 可选：人工预启动微信开发者工具
 
-在使用 MCP 服务器之前，需要先启动微信开发者工具并开启 WebSocket 服务。
+默认流程无需 agent 手动执行 CLI：直接调用 `mp_ensureConnection`，本地端口未监听且允许 AutoLaunch 时，server 会自行执行 `cli auto`。下面的命令只用于人工排障，或显式设置 `WEAPP_AUTOLAUNCH=false` 后由用户自行预启动开发者工具。
 
 💡 在开始之前：
 1. 打开微信开发者工具
 2. 进入 **设置 → 安全设置 → 服务端口**
 3. 开启 **"HTTP 调试"** 和 **"自动化测试"**
 
-**使用命令行启动**
+**人工使用命令行启动**
 
 使用命令行启动微信开发者工具并自动开启 WebSocket 服务：
 
-**macOS/Linux：**
+**macOS：**
 ```bash
 /Applications/wechatwebdevtools.app/Contents/MacOS/cli auto --project /path/to/your/project --auto-port 9420
 ```
@@ -253,12 +257,12 @@ npm run dev
 | `WEAPP_DEVTOOLS_ARGS` | 启动时的额外 CLI 参数（空格分隔）。 |
 | `WEAPP_DEVTOOLS_CWD` | 传递给开发者工具进程的工作目录。 |
 | `WEAPP_AUTOCLOSE` | 设置为 `true` 时，每次工具调用后关闭开发者工具会话。 |
-| `WEAPP_AUTOLAUNCH` | 仅在显式 `launch` 路径下用于辅助启动开发者工具；不会在 `connect` 失败后自动切换模式或端口 |
+| `WEAPP_AUTOLAUNCH` | 本地 `connect` 目标端口未监听时是否允许 `mp_ensureConnection` 使用 `cli auto` 拉起开发者工具；默认允许，设为 `false` 禁用。不会自动切换端口或拉起远程目标。 |
 | `WEAPP_LAUNCH_TIMEOUT` | 启动超时时间（毫秒，默认 45000） |
 | `WEAPP_CONNECT_TIMEOUT` | 连接超时时间（毫秒，默认 45000） |
 | `WEAPP_PROJECT_PATH` | 小程序项目路径（可选） |
 
-> **注意：** 当启动开发者工具（`launch` 模式）时，必须通过 MCP 工具参数提供小程序项目目录：在执行操作前通过 `connection.projectPath` 提供（例如通过 `mp_ensureConnection`）。该值一旦建立，将在后续调用中持久化。
+> **注意：** `launch` / 本地自动拉起最终都需要可解析的小程序项目目录。可通过 `connection.projectPath`、`WEAPP_PROJECT_PATH`、`mp_setDefaultProject` 的持久化默认值、最近项目或当前工作目录提供；显式设置的默认项目不会被后续活动会话覆盖。
 
 工具调用可以通过 `connection` 对象覆盖这些默认值中的大部分。
 
@@ -285,9 +289,10 @@ npm run dev
 这个模式下：
 - `WEAPP_WS_ENDPOINT` 必须指向可被 `miniprogram-automator.connect()` 连接的 websocket endpoint
 - 不要把 IDE HTTP 端口误当成 websocket 端口
-- 不要再执行 `cli open`、`cli auto`、`cli quit`
-- 建议先调用 `mp_diagnoseConnection`，再调用 `mp_ensureConnection`
-- 如果连接失败，只返回诊断结果，不要自动切端口
+- 不要手动执行 `cli open`、`cli auto`、`cli quit`
+- 默认直接调用 `mp_ensureConnection`；它会优先复用现有会话，并在本地端口未监听时按配置自愈
+- 只想只读探测，或 ensure / recovery 已失败时，再调用 `mp_diagnoseConnection`
+- 不要自动切端口；如需禁止 ensure 自动执行 `cli auto`，设置 `WEAPP_AUTOLAUNCH=false`
 
 #### 模式 B：由 MCP 拉起 IDE（launch）
 
@@ -328,22 +333,23 @@ npm run dev
 
 当用户已经打开微信开发者工具时：
 1. 不要执行 `cli open`
-2. 不要执行 `cli auto`
-3. 不要执行 `cli quit`
-4. 先调用 `mp_diagnoseConnection`
-5. 再调用 `mp_ensureConnection`
-6. 如果连接失败，只返回诊断结果，不要自动切端口
+2. 不要执行 `cli quit`
+3. 默认直接调用 `mp_ensureConnection`，它会优先复用现有自动化会话
+4. `mp_diagnoseConnection` 仅用于只读探测，或在 ensure / recovery 失败后补充诊断
+5. 不要手动切端口；本地自动化端口未监听且 `WEAPP_AUTOLAUNCH` 未禁用时，`mp_ensureConnection` 可自行执行 `cli auto`
+6. 不允许自动拉起时设置 `WEAPP_AUTOLAUNCH=false`
 
 ## 可用工具
 
 ### 应用工具（Application Tools）
 
 - `mp_diagnoseConnection` – 只诊断当前连接目标，不启动 IDE、不修改项目状态
-- `mp_ensureConnection` – 确保自动化会话就绪；建议先调用 `mp_diagnoseConnection`，再决定是否重连或覆盖连接设置
+- `mp_ensureConnection` – 确保自动化会话就绪，是连接链路默认入口；失败后再按返回指引诊断或恢复
 - `mp_navigate` – 在小程序内导航，支持 `navigateTo`、`redirectTo`、`reLaunch`、`switchTab` 或 `navigateBack`
 - `mp_screenshot` – 捕获屏幕截图并返回（或保存到磁盘）
 - `mp_callWx` – 调用微信小程序 API 方法（如 `wx.showToast`）
 - `mp_evaluate` – 向小程序 AppService 注入并执行函数代码，适合做显式运行时读取
+- `mp_pollUntil` – 轮询 AppService 条件，命中后可执行动作并采集前后状态快照
 - `mp_getLogs` – 获取小程序控制台日志，支持按 `type`、`contains`、`since`、`limit` 过滤，并返回日志监听状态（如 `listenerAttached`、`lastLogAt`、`sessionId`）
 - `mp_runScenario` – 按顺序执行一组最小测试步骤，当前支持 `navigate`、`tap`、`input`、`waitRoute`、`expect*`、`snapshot`、`getLogs`、`screenshot`
 - `mp_generateScenarioReport` – 执行 scenario 并输出 markdown 报告；可选写入 `outputPath`，适合产出轻量回归测试记录，并可引用截图路径
@@ -356,7 +362,7 @@ npm run dev
 ### 页面工具（Page Tools）
 
 - `page_getElement` – 通过选择器获取页面元素，返回元素摘要信息（tagName、text、value、size、offset）；设置 `withWxml: true` 可额外返回完整 outerWxml；**支持 [index=N] 语法选择第 N 个元素**
-- `page_getElements` – 通过选择器获取页面元素数组，返回每个元素的摘要信息；设置 `withWxml: true` 可额外返回每个元素的完整 outerWxml；**支持 [index=N] 语法**
+- `page_getElements` – 通过选择器获取页面元素数组，返回每个元素的摘要信息；`limit` 默认/最大 100；设置 `withWxml: true` 可额外返回每个元素的完整 outerWxml；**支持 [index=N] 语法**
 - `page_waitElement` – 等待元素出现在页面上（⚠️ 不适用于自定义组件内部元素）；**支持 [index=N] 语法；增加超时和重试间隔参数**
 - `page_waitElementGone` – 等待元素从页面上消失；**支持 [index=N] 语法；支持超时和重试间隔参数**
 - `page_waitRoute` – 等待当前页面路径变为指定值，适合确认导航真正完成；支持超时和重试间隔参数
@@ -381,7 +387,7 @@ npm run dev
 - `element_getData` – 获取自定义组件实例的渲染数据
 - `element_setData` – 设置自定义组件实例的渲染数据
 - `element_getInnerElement` – 获取元素内的元素（相当于 `element.$(selector)`），返回元素摘要信息；设置 `withWxml: true` 可额外返回完整 outerWxml
-- `element_getInnerElements` – 获取元素内的元素数组（相当于 `element.$$(selector)`），返回元素摘要信息；设置 `withWxml: true` 可额外返回每个元素的完整 outerWxml
+- `element_getInnerElements` – 获取元素内的元素数组（相当于 `element.$$(selector)`），返回元素摘要信息；`limit` 默认/最大 100；设置 `withWxml: true` 可额外返回每个元素的完整 outerWxml
 - `element_getWxml` – 获取元素 WXML（内部或外部）
 - `element_getStyles` – 获取元素的 CSS 样式值，names 参数为样式名数组（如 `['color', 'fontSize']`）
 - `element_scrollTo` – 滚动 scroll-view 组件到指定位置（x, y）
@@ -396,7 +402,7 @@ npm run dev
 ### 一般提示
 
 - 连接前，在微信开发者工具中启用自动化（`设置 → 安全设置 → 服务端口`）
-- 推荐先调用 `mp_diagnoseConnection`，再调用 `mp_ensureConnection` 来验证连接并查看系统/页面详情
+- 默认先调用 `mp_ensureConnection` 建立或复用会话；只读探测或连接失败排查再用 `mp_diagnoseConnection`
 - 使用 `WEAPP_AUTOCLOSE=true` 适合无状态的一次性交互
 - **导航时始终使用绝对路径**（以 `/` 开头）：`/pages/mine/mine`
 - tabBar 页面使用 `switchTab`，普通页面使用 `navigateTo`
@@ -439,12 +445,12 @@ npm run dev
 
 ### 自动启动功能（AutoLaunch）
 
-`WEAPP_AUTOLAUNCH=true` 现在只应理解为 **显式 `launch` 配置下的启动辅助开关**，不是 `connect` 失败后的兜底恢复策略。
+本地 `connect` 目标端口未监听时，`mp_ensureConnection` 默认会使用 `cli auto` 拉起开发者工具。设置 `WEAPP_AUTOLAUNCH=false` 可显式禁用。远程 `wsEndpoint` 不会触发本机自动拉起。
 
 当前安全策略是：
 1. 如果用户已经手动打开 IDE，应优先使用 `connect`
-2. `connect` 失败时先诊断，不自动切模式、不自动切端口
-3. 只有明确进入 `launch` 模式时，MCP 才尝试启动 IDE
+2. 本地 `connect` 端口未监听时，MCP 可自动执行 `cli auto`，但不自动切模式、不自动切端口
+3. `autoLaunch=false` 或远程 `wsEndpoint` 时不会自动启动 IDE
 4. 如果检测到 DevTools 已在运行，会优先阻止重复拉起
 
 #### 配置示例
@@ -469,10 +475,10 @@ npm run dev
 
 #### 工作流程
 
-1. 首次连接时，检测到 `WEAPP_AUTOLAUNCH=true`
+1. 首次连接时，检测到本地自动化端口未监听且未设置 `WEAPP_AUTOLAUNCH=false`
 2. 检查 9420 端口是否有服务
 3. 无服务则自动启动开发者工具（使用 `cli.bat auto --project <path> --auto-port 9420`）
-4. 等待 45 秒让开发者工具就绪
+4. 按 `WEAPP_LAUNCH_TIMEOUT` 等待开发者工具就绪（默认 45 秒）
 5. 建立 WebSocket 连接
 6. **后续连接自动复用现有连接**
 

@@ -1,6 +1,6 @@
 # weapp-agent-mcp Agent 使用手册
 
-日期：2026-04-14  
+日期：2026-06-04
 适用对象：需要在 Claude Code 中直接使用 `weapp-agent-mcp` MCP 的 agent
 
 ## 这是什么
@@ -14,18 +14,18 @@
 - 推荐连接端点：`ws://localhost:9420`
 - 普通使用者推荐通过 `npx -y @chaixueyuan/weapp-agent-mcp` 接入
 - 本地 `dist/index.js` 更适合开发者调试未发布改动
-- `WEAPP_AUTOLAUNCH=true` 仅适用于明确的 `launch` 场景，不应与已打开 IDE 的 `connect` 场景混用
+- 本地 `connect` 端口未监听时，`mp_ensureConnection` 默认允许通过 `cli auto` 自愈；不允许自动拉起时设置 `WEAPP_AUTOLAUNCH=false`
 
 ## 使用前必须知道的前提
 
-### 1. 先诊断，再连通，再做页面操作
+### 1. 先确保连接，再做页面操作
 
 推荐固定顺序：
-1. 先调用 `mp_diagnoseConnection`
-2. 再调用 `mp_ensureConnection`
-3. 再调用 `mp_healthCheck`
-4. 若状态健康，再调用 `mp_currentPage`
-5. 需要观察界面时调用 `mp_screenshot`
+1. 先调用 `mp_ensureConnection`
+2. 需要确认全局状态时调用 `mp_healthCheck`
+3. 若 `needsRecovery=true`，调用 `mp_recoverConnection`
+4. 只读探测或 ensure / recovery 已失败时，再调用 `mp_diagnoseConnection`
+5. 需要观察界面时串行调用 `mp_screenshot`
 6. 之后再调用 `page_*` 或 `element_*`
 
 不要一上来直接操作页面元素。
@@ -34,20 +34,19 @@
 
 当用户已经手动打开微信开发者工具时：
 - 不要执行 `cli open`
-- 不要执行 `cli auto`
 - 不要执行 `cli quit`
-- 先 `mp_diagnoseConnection`，再 `mp_ensureConnection`
-- 如果连接失败，只返回诊断结果，不要自动切端口
-- `connect` 与 `launch` 两种模式不要混用
+- 默认直接调用 `mp_ensureConnection`，它会优先复用现有会话
+- 不要手动切端口；本地端口未监听时，让 ensure 按 `WEAPP_AUTOLAUNCH` 配置决定是否自愈
+- `mp_diagnoseConnection` 只读，不负责修复
 
-### 2. `9420` 才是主 automator 端口
+### 3. `9420` 才是主 automator 端口
 
 历史上可能会看到其他调试端口，但当前推荐自动化连接端口是：
 - `ws://localhost:9420`
 
 如果你在排查连接问题，优先确认这个端点，而不是把其他调试端口当成 automator 主入口。
 
-### 3. 关于 `mp_getLogs` 的一个重要事实
+### 4. 关于 `mp_getLogs` 的一个重要事实
 
 当前项目 中，`mp_getLogs` 已不再仅依赖 MCP 进程内存，而是会读取持久化后的日志状态。
 
@@ -62,13 +61,14 @@
 3. 若仍为空，再执行一次 `mp_ensureConnection`
 4. 必要时用 `reconnect=true` 重新绑定监听后再复现动作
 
-### 4. 连接失败时不要盲重试
+### 5. 连接失败时不要盲重试
 
 推荐恢复顺序：
 1. 先调用 `mp_healthCheck`
 2. 若 `needsRecovery=true`，优先调用 `mp_recoverConnection`
 3. 若仍有明确重连需要，再使用 `mp_ensureConnection(reconnect=true)`
 4. 如果提示项目选择问题，调用 `mp_listProjects` 或在 `mp_ensureConnection` 中传 `projectSelection`
+5. 连接全绿但仅 `lastScreenshotOk=false` 时不要重连；这是截图通道降级，改用截图建议或页面数据/元素断言
 
 不要在相同参数下无脑重复调用很多次。
 
@@ -179,16 +179,15 @@
 ### 场景 A：页面调试
 
 推荐顺序：
-1. `mp_diagnoseConnection`
-2. `mp_ensureConnection`
-3. `mp_currentPage`
-4. `mp_screenshot`
-5. `page_getElements` / `page_getElement`
-6. `element_tap` / `element_input`
-7. 再次 `mp_currentPage` / `mp_screenshot`
-8. 需要时用 `page_waitRoute` 或 `page_waitElementGone`
-9. 动作完成后，用 `page_expectRoute` / `page_expectVisible` / `page_expectElementText` / `page_expectCount` / `page_expectData` 做结构化断言
-10. 若要校验页面标题，必须明确是原生标题还是自定义标题；自定义标题用明确选择器配合 `page_expectElementText`，不要默认依赖统一 class / id
+1. `mp_ensureConnection`
+2. `mp_currentPage`
+3. `mp_screenshot`
+4. `page_getElements` / `page_getElement`
+5. `element_tap` / `element_input`
+6. 再次 `mp_currentPage` / `mp_screenshot`
+7. 需要时用 `page_waitRoute` 或 `page_waitElementGone`
+8. 动作完成后，用 `page_expectRoute` / `page_expectVisible` / `page_expectElementText` / `page_expectCount` / `page_expectData` 做结构化断言
+9. 若要校验页面标题，必须明确是原生标题还是自定义标题；自定义标题用明确选择器配合 `page_expectElementText`，不要默认依赖统一 class / id
 
 适合：
 - 看页面
@@ -201,11 +200,10 @@
 ### 场景 B：data 调试
 
 推荐顺序：
-1. `mp_diagnoseConnection`
-2. `mp_ensureConnection`
-3. `mp_currentPage`（必要时 `withData=true`）
-4. `page_getData`
-5. 若超时或不稳定，再考虑 `mp_evaluate`
+1. `mp_ensureConnection`
+2. `mp_currentPage`（必要时 `withData=true`）
+3. `page_getData`
+4. 若超时或不稳定，再考虑 `mp_evaluate`
 
 推荐策略：
 - 先走标准 API
@@ -215,13 +213,13 @@
 ### 场景 C：日志调试
 
 推荐顺序：
-1. `mp_diagnoseConnection`
-2. `mp_ensureConnection`
-3. 触发动作
-4. `mp_getLogs`
-5. 若日志为空，先核对页面路径、元素状态或截图，确认动作是否真的发生
-6. 若连接疑似异常，重新 `mp_diagnoseConnection`
-7. 再决定是否 `mp_ensureConnection(reconnect=true)`
+1. `mp_ensureConnection`
+2. 触发动作
+3. `mp_getLogs`
+4. 若日志为空，先核对页面路径、元素状态或截图，确认动作是否真的发生
+5. 若连接疑似异常，调用 `mp_healthCheck`
+6. 仅当 `needsRecovery=true` 时调用 `mp_recoverConnection`
+7. ensure / recovery 仍失败时，再用 `mp_diagnoseConnection` 只读排查
 8. 再次触发动作并重新取日志
 
 补充说明：
@@ -231,12 +229,11 @@
 ### 场景 D：最小自动化测试流
 
 推荐顺序：
-1. `mp_diagnoseConnection`
-2. `mp_ensureConnection`
-3. `mp_healthCheck`
-4. `mp_runScenario`
-5. 需要产出可复核结果时，再调用 `mp_generateScenarioReport`
-6. 若 scenario 失败，再回到 `page_*` / `element_*` 做局部排查
+1. `mp_ensureConnection`
+2. `mp_healthCheck`
+3. `mp_runScenario`
+4. 需要产出可复核结果时，再调用 `mp_generateScenarioReport`
+5. 若 scenario 失败，再回到 `page_*` / `element_*` 做局部排查
 
 适合：
 - 冒烟测试
@@ -252,8 +249,8 @@
 
 ### 推荐
 - 新开 agent / 新会话验证最新 MCP 配置
-- 先 `mp_diagnoseConnection`
-- 再 `mp_ensureConnection`
+- 先 `mp_ensureConnection`
+- 只读探测或 ensure / recovery 失败后，再用 `mp_diagnoseConnection`
 - 先看页面路径和截图
 - 把页面路径、截图、元素状态作为主判断依据
 - 标题校验要显式声明来源；不要默认把顶部可见标题等同于原生 navigationBar title
@@ -262,7 +259,7 @@
 - 需要深层读取时显式使用 `mp_evaluate`
 - 若在维护当前项目本身，保留一个本机测试小程序来覆盖导航、输入、列表、滚动、截图和日志链路
 - `mp_screenshot` 按严格串行使用，不要并发调用；连续截图之间保留一个很短缓冲
-- 若截图连续超时，先 `mp_healthCheck`，必要时执行 `mp_recoverConnection`
+- 若截图连续超时，先 `mp_healthCheck`；仅当 `needsRecovery=true` 时执行 `mp_recoverConnection`
 
 ### 不推荐
 - 跳过连接检查直接操作页面
@@ -299,7 +296,8 @@
 如果你要把这套工具交给另一个 agent，最简单可以直接这样说：
 
 - 使用 `weapp-agent-mcp` MCP 调试微信小程序。
-- 先 `mp_diagnoseConnection`，再 `mp_ensureConnection`；若连接异常，先返回诊断结果，不要自动切端口。
+- 先 `mp_ensureConnection`；若操作失败，调用 `mp_healthCheck`，仅在 `needsRecovery=true` 时调用 `mp_recoverConnection`。
+- 只读探测或 ensure / recovery 失败后，再调用 `mp_diagnoseConnection`；不要自动切端口。
 - 再 `mp_currentPage`，根据需要使用截图、元素查询、点击与输入。
 - 页面判断优先依赖页面路径、截图和元素状态。
 - `page_getData` 与 `element_getData` 可用，但若超时不要卡住，必要时改用 `mp_evaluate` 做显式深层读取。

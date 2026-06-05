@@ -5,26 +5,55 @@ import {
   type SerializableValue,
   type Tool,
 } from "fastmcp";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
-import { connectionOverridesSchema } from "../config.js";
+import {
+  booleanish,
+  ConfigError,
+  connectionOverridesSchema,
+  numberish,
+} from "../config.js";
+import type { WeappAutomatorManager } from "../weappClient.js";
+
+export { booleanish, numberish };
 
 export type ToolContext = Context<Record<string, unknown> | undefined>;
 export type AnyTool = Tool<Record<string, unknown> | undefined>;
 
 export const connectionContainerSchema = z.object({
   connection: connectionOverridesSchema.optional(),
-});
+}).strict();
 
 export const connectionOnlyParameters = connectionContainerSchema;
 
 export const ensureConnectionParameters = connectionContainerSchema
   .extend({
-    reconnect: z.coerce.boolean().optional().default(false),
+    reconnect: booleanish.optional().default(false),
     projectSelection: z.string().optional(),
   });
 
-export const querySchema = z.record(z.string(), z.string()).optional();
+export const querySchema = z
+  .record(z.string(), z.string())
+  .refine((value) => Object.keys(value).length <= 100, {
+    message: "query must contain at most 100 entries",
+  })
+  .optional();
+
+export const maxBytesSchema = numberish(
+  z.number().int().min(64).max(1_000_000)
+);
+
+export const MAX_SNAPSHOT_ELEMENT_SUMMARIES = 100;
+
+// z.unknown() accepts a missing object property in Zod 4. MCP inputs are JSON,
+// so undefined is not a meaningful explicit value; reject it to keep fields
+// such as assertion `expected` genuinely required.
+export const requiredJsonValueSchema = z
+  .unknown()
+  .refine((value) => value !== undefined, {
+    message: "expected is required",
+  });
 
 export const stringListSchema = z
   .union([z.string(), z.array(z.string())])
@@ -54,7 +83,7 @@ export function buildUrl(
 }
 
 export function formatJson(value: unknown): string {
-  const serialized = JSON.stringify(value, null, 2);
+  const serialized = JSON.stringify(toSerializableValue(value), null, 2);
   return serialized ?? String(value);
 }
 
@@ -92,6 +121,9 @@ export async function withUserErrorResult<T extends ContentResult>(
     }
     if (error instanceof z.ZodError) {
       return toErrorResult(`Invalid parameters: ${error.issues.map((issue) => issue.message).join("; ")}`) as T;
+    }
+    if (error instanceof ConfigError) {
+      return toErrorResult(error.message) as T;
     }
     throw error;
   }
@@ -135,8 +167,21 @@ export async function resolveElement(
     if (typeof pageWithAll.$$ !== "function") {
       throw new UserError("Page instance does not support indexed selectors (page.$$ missing).");
     }
-    const elements = await pageWithAll.$$(parsed.baseSelector);
-    if (!Array.isArray(elements) || elements.length === 0) {
+    let elements: unknown[];
+    try {
+      const result = await pageWithAll.$$(parsed.baseSelector);
+      if (!Array.isArray(result)) {
+        throw new UserError(`查询选择器 "${parsed.baseSelector}" 失败。`);
+      }
+      elements = result;
+    } catch (error) {
+      if (error instanceof UserError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`查询选择器 "${parsed.baseSelector}" 失败: ${message}`);
+    }
+    if (elements.length === 0) {
       throw new UserError(notFoundMessage(parsed.baseSelector));
     }
     if (parsed.index < 0 || parsed.index >= elements.length) {
@@ -146,7 +191,15 @@ export async function resolveElement(
     }
     element = elements[parsed.index];
   } else {
-    element = await (page as { $: (s: string) => Promise<any> }).$(selector);
+    try {
+      element = await (page as { $: (s: string) => Promise<any> }).$(selector);
+    } catch (error) {
+      if (error instanceof UserError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`查询选择器 "${selector}" 失败: ${message}`);
+    }
     if (!element) {
       throw new UserError(notFoundMessage(selector));
     }
@@ -158,7 +211,18 @@ export async function resolveElement(
         `Element for selector "${selector}" does not support nested queries.`
       );
     }
-    const inner = await element.$(innerSelector);
+    let inner;
+    try {
+      inner = await element.$(innerSelector);
+    } catch (error) {
+      if (error instanceof UserError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `查询元素 "${selector}" 内部选择器 "${innerSelector}" 失败: ${message}`
+      );
+    }
     if (!inner) {
       throw new UserError(
         `${notFoundMessage(innerSelector)} (查询范围: 元素 "${selector}" 内部)`
@@ -175,7 +239,7 @@ function notFoundMessage(selector: string): string {
     hints.push("selector 含 `{{}}` 模板插值 — 用渲染后的字面值或静态 class 部分");
   }
   hints.push("调 `page_snapshot(withElements=true)` 列出当前 DOM 摘要");
-  hints.push("调 `page_getWxml` 检查渲染后的合成 class");
+  hints.push("调 `page_snapshot(selectors=[...], withWxml=true)` 检查渲染后的合成 class");
   hints.push("自定义组件内部用 `element_getInnerElement(s)` 或 selector + innerSelector");
   return `元素未找到: "${selector}"。建议：${hints.map((h, i) => `${i + 1}) ${h}`).join("；")}。`;
 }
@@ -186,30 +250,39 @@ export async function summarizeElement(
 ): Promise<Record<string, SerializableValue>> {
   const tagName = typeof element?.tagName === "string" ? element.tagName : null;
   const withWxml = options?.withWxml ?? false;
-  
-  const [text, value, outerWxml, size, offset, scrollWidth, scrollHeight] = await Promise.all([
-    typeof element?.text === "function"
-      ? element.text().catch(() => null)
-      : null,
-    typeof element?.value === "function"
-      ? element.value().catch(() => null)
-      : null,
-    withWxml && typeof element?.outerWxml === "function"
-      ? element.outerWxml().catch(() => null)
-      : null,
-    typeof element?.size === "function"
-      ? element.size().catch(() => null)
-      : null,
-    typeof element?.offset === "function"
-      ? element.offset().catch(() => null)
-      : null,
-    typeof element?.scrollWidth === "function"
-      ? element.scrollWidth().catch(() => null)
-      : null,
-    typeof element?.scrollHeight === "function"
-      ? element.scrollHeight().catch(() => null)
-      : null,
+
+  const readField = async (
+    name: string,
+    enabled = true
+  ): Promise<{ attempted: boolean; ok: boolean; value: unknown; error?: unknown }> => {
+    if (!enabled || typeof element?.[name] !== "function") {
+      return { attempted: false, ok: false, value: null };
+    }
+    try {
+      return { attempted: true, ok: true, value: await element[name]() };
+    } catch (error) {
+      return { attempted: true, ok: false, value: null, error };
+    }
+  };
+
+  const reads = await Promise.all([
+    readField("text"),
+    readField("value"),
+    readField("outerWxml", withWxml),
+    readField("size"),
+    readField("offset"),
+    readField("scrollWidth"),
+    readField("scrollHeight"),
   ]);
+  const attemptedReads = reads.filter((read) => read.attempted);
+  if (attemptedReads.length > 0 && attemptedReads.every((read) => !read.ok)) {
+    const firstError = attemptedReads.find((read) => read.error !== undefined)?.error;
+    const message = firstError instanceof Error ? firstError.message : String(firstError);
+    throw new UserError(`读取元素摘要失败: ${message}`);
+  }
+
+  const [text, value, outerWxml, size, offset, scrollWidth, scrollHeight] =
+    reads.map((read) => read.value);
 
   const result: Record<string, SerializableValue> = {
     tagName: toSerializableValue(tagName),
@@ -241,6 +314,28 @@ export async function waitOnPage(page: unknown, waitMs?: number): Promise<void> 
   }
   if (page && typeof (page as { waitFor?: unknown }).waitFor === "function") {
     await (page as { waitFor: (value: number) => Promise<void> }).waitFor(waitMs);
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
+export async function readCurrentPage(
+  manager: WeappAutomatorManager,
+  miniProgram: { currentPage: () => Promise<unknown> },
+  description: string,
+  timeoutMs?: number
+): Promise<any> {
+  try {
+    return await manager.withRequestTimeout(
+      () => miniProgram.currentPage(),
+      { description, timeoutMs }
+    );
+  } catch (error) {
+    if (error instanceof UserError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UserError(`${description}失败: ${message}`);
   }
 }
 
@@ -248,72 +343,179 @@ export function serializePageSummary(page: unknown): SerializableValue {
   if (!isPageLike(page)) {
     return toSerializableValue(page);
   }
+  return serializePageSummaryInternal(page, new WeakSet<object>(), 0);
+}
+
+function serializePageSummaryInternal(
+  page: { path: string; query?: unknown },
+  seen: WeakSet<object>,
+  depth: number
+): SerializableValue {
+  if (seen.has(page)) {
+    return "[Circular]" as SerializableValue;
+  }
+  seen.add(page);
   const summary: Record<string, SerializableValue> = {
     path: page.path,
   };
   if (page.query !== undefined) {
-    summary.query = toSerializableValue(page.query);
+    summary.query = toSerializableValueInternal(page.query, seen, depth + 1);
   }
+  seen.delete(page);
   return summary as SerializableValue;
 }
 
 export function toSerializableValue(value: unknown): SerializableValue {
+  try {
+    return toSerializableValueInternal(value, new WeakSet<object>(), 0);
+  } catch (error) {
+    return formatUnserializableValue(error);
+  }
+}
+
+function toSerializableValueInternal(
+  value: unknown,
+  seen: WeakSet<object>,
+  depth: number
+): SerializableValue {
   if (value === null || value === undefined) {
     return value as SerializableValue;
   }
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
+  if (typeof value === "string" || typeof value === "boolean") {
     return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      return String(value) as SerializableValue;
+    }
+    return Object.is(value, -0) ? 0 : value;
   }
   if (typeof value === "bigint") {
     return value.toString() as SerializableValue;
   }
   if (value instanceof Date) {
-    return value.toISOString() as SerializableValue;
+    return Number.isNaN(value.getTime())
+      ? String(value) as SerializableValue
+      : value.toISOString() as SerializableValue;
   }
   if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
     return value.toString("base64") as SerializableValue;
   }
-  if (Array.isArray(value)) {
-    return value.map((item) => toSerializableValue(item)) as SerializableValue;
+  if (depth >= 50) {
+    return "[MaxDepth]" as SerializableValue;
   }
-  if (isPageLike(value)) {
-    return serializePageSummary(value);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return "[Circular]" as SerializableValue;
+    }
+    seen.add(value);
+    try {
+      return value.map((item) =>
+        toSerializableValueInternal(item, seen, depth + 1)
+      ) as SerializableValue;
+    } catch (error) {
+      return formatUnserializableValue(error);
+    } finally {
+      seen.delete(value);
+    }
+  }
+  try {
+    if (isPageLike(value)) {
+      return serializePageSummaryInternal(value, seen, depth);
+    }
+  } catch (error) {
+    return formatUnserializableValue(error);
   }
   if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).map(
-      ([key, val]) => [key, toSerializableValue(val)]
-    );
-    return Object.fromEntries(entries) as SerializableValue;
+    if (seen.has(value)) {
+      return "[Circular]" as SerializableValue;
+    }
+    seen.add(value);
+    try {
+      const entries = Object.entries(value as Record<string, unknown>).map(
+        ([key, val]) => [
+          key,
+          toSerializableValueInternal(val, seen, depth + 1),
+        ]
+      );
+      return Object.fromEntries(entries) as SerializableValue;
+    } catch (error) {
+      return formatUnserializableValue(error);
+    } finally {
+      seen.delete(value);
+    }
   }
-  return String(value) as SerializableValue;
+  try {
+    return String(value) as SerializableValue;
+  } catch (error) {
+    return formatUnserializableValue(error);
+  }
+}
+
+function formatUnserializableValue(error: unknown): SerializableValue {
+  let message = "unknown serialization error";
+  try {
+    message = error instanceof Error ? error.message : String(error);
+  } catch {
+    // Keep the stable fallback when even the thrown value cannot be stringified.
+  }
+  return `[Unserializable: ${message}]` as SerializableValue;
 }
 
 function isPageLike(value: unknown): value is { path: string; query?: unknown } {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof (value as { path?: unknown }).path !== "string"
+  ) {
+    return false;
+  }
+  const candidate = value as {
+    data?: unknown;
+    waitFor?: unknown;
+    $?: unknown;
+  };
   return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { path?: unknown }).path === "string"
+    typeof candidate.data === "function" ||
+    typeof candidate.waitFor === "function" ||
+    typeof candidate.$ === "function"
   );
 }
 
-export function createFunctionFromSource(
+export function runFunctionSourceInAppService(
   source: string,
-  context: string
-): (...args: unknown[]) => unknown {
-  try {
-    const fn = new Function(`return (${source});`)();
-    if (typeof fn !== "function") {
-      throw new Error("Source did not evaluate to a function.");
-    }
-    return fn as (...args: unknown[]) => unknown;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new UserError(`${context} is invalid: ${message}`);
+  args: unknown[]
+): unknown {
+  // This fixed runner is serialized by miniprogram-automator and executes in
+  // AppService. Never evaluate caller-provided source in the MCP host process.
+  const fn = new Function(`return (${source});`)();
+  if (typeof fn !== "function") {
+    throw new Error("Source did not evaluate to a function.");
   }
+  return fn(...args);
+}
+
+export function areSerializableValuesEqual(
+  left: unknown,
+  right: unknown
+): boolean {
+  return isDeepStrictEqual(
+    toSerializableValue(left),
+    toSerializableValue(right)
+  );
+}
+
+export function setOwnEnumerableValue(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 export function getByPath(target: unknown, path: string): unknown {
@@ -380,10 +582,88 @@ export function pickByPaths(
     if (v === undefined) {
       missing.push(p);
     } else {
-      values[p] = toSerializableValue(v) as unknown;
+      setOwnEnumerableValue(values, p, toSerializableValue(v));
     }
   }
   return { values, missing };
+}
+
+/**
+ * 统一的"按字节裁剪后的文本结果"包装：未超 maxBytes 原样返回 payload；
+ * 超出时返回 { ...identity, truncated, bytes, maxBytes, note?, data } 的统一形状，
+ * 在最终文本不超过 maxBytes 的前提下优先保留 identity 字段（如 selector/route）。
+ */
+export function clampedTextResult(
+  payload: Record<string, unknown>,
+  maxBytes: number | undefined,
+  options?: { identity?: Record<string, unknown>; note?: string }
+): ContentResult {
+  const formatted = formatJson(payload);
+  if (!maxBytes || Buffer.byteLength(formatted, "utf8") <= maxBytes) {
+    return toTextResult(formatted);
+  }
+
+  const normalizedPayload = toSerializableValue(payload);
+  const compactPayload = JSON.stringify(normalizedPayload) ?? "";
+  const bytes = Buffer.byteLength(compactPayload, "utf8");
+  if (bytes <= maxBytes) {
+    return toTextResult(compactPayload);
+  }
+  const result: Record<string, unknown> = {
+    truncated: true,
+    bytes,
+    maxBytes,
+  };
+  const reservedKeys = new Set(["truncated", "bytes", "maxBytes", "data", "note"]);
+  const fits = (value: Record<string, unknown>): boolean =>
+    Buffer.byteLength(JSON.stringify(value), "utf8") <= maxBytes;
+  const tryAdd = (key: string, value: unknown): boolean => {
+    const candidate = { ...result };
+    setOwnEnumerableValue(candidate, key, toSerializableValue(value));
+    if (!fits(candidate)) {
+      return false;
+    }
+    setOwnEnumerableValue(result, key, toSerializableValue(value));
+    return true;
+  };
+
+  for (const [key, value] of Object.entries(options?.identity ?? {})) {
+    if (!reservedKeys.has(key)) {
+      tryAdd(key, value);
+    }
+  }
+
+  let low = 1;
+  let high = maxBytes;
+  let bestData: unknown;
+  while (low <= high) {
+    const budget = Math.floor((low + high) / 2);
+    const candidateData = clampJsonByBytes(normalizedPayload, budget).value;
+    const candidate = { ...result };
+    setOwnEnumerableValue(candidate, "data", candidateData);
+    if (fits(candidate)) {
+      bestData = candidateData;
+      low = budget + 1;
+    } else {
+      high = budget - 1;
+    }
+  }
+  if (bestData !== undefined) {
+    setOwnEnumerableValue(result, "data", bestData);
+  }
+  if (options?.note) {
+    tryAdd("note", options.note);
+  }
+
+  const compactResult = JSON.stringify(result);
+  if (Buffer.byteLength(compactResult, "utf8") > maxBytes) {
+    // Tool schemas require maxBytes >= 64; keep a defensive fallback for
+    // direct helper callers that bypass schema validation.
+    return toTextResult("0");
+  }
+  return toTextResult(
+    compactResult
+  );
 }
 
 export function clampJsonByBytes(
@@ -395,11 +675,34 @@ export function clampJsonByBytes(
   if (!maxBytes || bytes <= maxBytes) {
     return { value, truncated: false, bytes };
   }
-  const headBudget = Math.max(0, maxBytes - 32);
   const buf = Buffer.from(serialized, "utf8");
-  const head = buf.subarray(0, headBudget).toString("utf8").replace(/�+$/, "");
+
+  let low = 0;
+  let high = Math.min(bytes, maxBytes);
+  let best: string | null = null;
+  while (low <= high) {
+    const candidateBytes = Math.floor((low + high) / 2);
+    const head = buf
+      .subarray(0, candidateBytes)
+      .toString("utf8")
+      .replace(/�+$/, "");
+    const keptBytes = Buffer.byteLength(head, "utf8");
+    const candidate = `${head}...[truncated ${bytes - keptBytes}B]`;
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") <= maxBytes) {
+      best = candidate;
+      low = candidateBytes + 1;
+    } else {
+      high = candidateBytes - 1;
+    }
+  }
+
+  // Extremely small budgets cannot fit a useful marker. Keep the returned
+  // JSON value inside the requested budget; `truncated: true` remains the
+  // authoritative signal for callers.
+  const truncatedValue: unknown =
+    best ?? (maxBytes >= 2 ? "" : 0);
   return {
-    value: `${head}...[truncated ${bytes - maxBytes}B]`,
+    value: truncatedValue,
     truncated: true,
     bytes,
   };

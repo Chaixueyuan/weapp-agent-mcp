@@ -22,16 +22,48 @@ export interface WeappConnectionConfig {
 
 export class ConfigError extends Error {}
 
+/**
+ * 字符串/布尔皆可的布尔解析器，修复 z.coerce.boolean() 的反转陷阱：
+ * z.coerce.boolean() 走 Boolean(value) 语义，任何非空字符串都变 true，
+ * 于是 env "false"/"0"/"no" 反而成了 true。env 永远是字符串，必中此坑。
+ * 这里显式把常见真假串映射好，未知串交给 z.boolean() 报错（而非静默错值）。
+ */
+export const booleanish = z.preprocess((value) => {
+  if (typeof value === "boolean") return value;
+  // 数字 1/0 兼容旧 z.coerce.boolean() 行为；其余数字落到 z.boolean() 报错（而非静默真值）
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return value;
+  }
+  if (typeof value !== "string") return value;
+  const t = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(t)) return true;
+  if (["0", "false", "no", "off", ""].includes(t)) return false;
+  return value;
+}, z.boolean());
+
+export const numberish = (schema: z.ZodNumber) =>
+  z.preprocess((value) => {
+    if (typeof value === "string" && value.trim() !== "") {
+      return Number(value);
+    }
+    return value;
+  }, schema);
+
 const argsSchema = z
-  .union([z.string(), z.array(z.string())])
+  .union([z.string(), z.array(z.string()).max(100)])
   .optional()
   .transform((value) => {
-    if (!value) {
+    if (value === undefined) {
       return undefined;
     }
     const list = Array.isArray(value) ? value : value.split(/\s+/);
     const normalized = list.map((item) => item.trim()).filter(Boolean);
-    return normalized.length ? normalized : undefined;
+    return normalized;
+  })
+  .refine((value) => !value || value.length <= 100, {
+    message: "args must contain at most 100 entries",
   });
 
 export const connectionOverridesSchema = z
@@ -40,17 +72,17 @@ export const connectionOverridesSchema = z
     cliPath: z.string().trim().min(1).optional(),
     projectPath: z.string().trim().min(1).optional(),
     wsEndpoint: z.string().trim().min(1).optional(),
-    timeout: z.coerce.number().int().positive().optional(),
-    port: z.coerce.number().int().positive().optional(),
+    timeout: numberish(z.number().int().positive().max(600000)).optional(),
+    port: numberish(z.number().int().positive().max(65535)).optional(),
     account: z.string().trim().min(1).optional(),
     ticket: z.string().trim().min(1).optional(),
-    trustProject: z.coerce.boolean().optional(),
+    trustProject: booleanish.optional(),
     args: argsSchema,
     cwd: z.string().trim().min(1).optional(),
-    autoClose: z.coerce.boolean().optional(),
-    autoLaunch: z.coerce.boolean().optional(),
-    launchTimeout: z.coerce.number().int().positive().optional(),
-    connectTimeout: z.coerce.number().int().positive().optional(),
+    autoClose: booleanish.optional(),
+    autoLaunch: booleanish.optional(),
+    launchTimeout: numberish(z.number().int().positive().max(600000)).optional(),
+    connectTimeout: numberish(z.number().int().positive().max(600000)).optional(),
   })
   .strict();
 
@@ -102,9 +134,40 @@ function fromPrevious(
   return base;
 }
 
+function normalizeWsEndpointForComparison(
+  endpoint: string | undefined
+): string | undefined {
+  if (!endpoint) {
+    return undefined;
+  }
+  try {
+    return new URL(endpoint).href;
+  } catch {
+    return endpoint;
+  }
+}
+
 export interface ResolveConfigOptions {
   allowIncompleteConnect?: boolean;
   allowIncompleteLaunch?: boolean;
+}
+
+function parseConnectionOverrides(
+  value: unknown,
+  source: "environment" | "overrides"
+): ConnectionOverrides {
+  try {
+    return connectionOverridesSchema.parse(value);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new ConfigError(
+        `Invalid connection ${source}: ${error.issues
+          .map((issue) => `${issue.path.join(".") || "connection"}: ${issue.message}`)
+          .join("; ")}`
+      );
+    }
+    throw error;
+  }
 }
 
 export function resolveConfig(
@@ -112,7 +175,7 @@ export function resolveConfig(
   previous?: WeappConnectionConfig,
   options?: ResolveConfigOptions
 ): WeappConnectionConfig {
-  const envInput: ConnectionOverrides = connectionOverridesSchema.parse({
+  const envInput = parseConnectionOverrides({
     mode: process.env.WEAPP_AUTOMATOR_MODE,
     cliPath: process.env.WECHAT_DEVTOOLS_CLI_PATH,
     projectPath: process.env.WEAPP_PROJECT_PATH,
@@ -128,25 +191,45 @@ export function resolveConfig(
     autoLaunch: process.env.WEAPP_AUTOLAUNCH,
     launchTimeout: process.env.WEAPP_LAUNCH_TIMEOUT,
     connectTimeout: process.env.WEAPP_CONNECT_TIMEOUT,
-  });
+  }, "environment");
 
   const base = fromPrevious(previous);
 
   const overrideConfig: ConnectionOverrides = overrides
-    ? connectionOverridesSchema.parse(overrides)
+    ? parseConnectionOverrides(overrides, "overrides")
     : { args: undefined };
 
   const merged = mergeDefined(base, envInput, overrideConfig);
 
   const mode: AutomatorMode =
-    merged.mode ??
-    (merged.wsEndpoint ? "connect" : previous?.mode ?? "launch");
+    overrideConfig.mode ??
+    envInput.mode ??
+    (overrideConfig.wsEndpoint
+      ? "connect"
+      : envInput.wsEndpoint
+        ? "connect"
+      : previous?.mode ?? "launch");
+
+  const connectTargetChanged =
+    mode === "connect" &&
+    previous !== undefined &&
+    (previous.mode !== "connect" ||
+      normalizeWsEndpointForComparison(previous.wsEndpoint) !==
+        normalizeWsEndpointForComparison(merged.wsEndpoint));
+  const projectPath =
+    connectTargetChanged &&
+    overrideConfig.projectPath === undefined &&
+    envInput.projectPath === undefined
+      ? undefined
+      : merged.projectPath;
 
   const config: WeappConnectionConfig = {
     mode,
     cliPath: merged.cliPath,
-    projectPath: merged.projectPath,
-    wsEndpoint: merged.wsEndpoint,
+    projectPath,
+    // wsEndpoint 只属于 connect 模式。显式切回 launch 时不能继续拿上一条
+    // connect 会话的 endpoint 做诊断，否则会探错目标甚至阻止正确 launch。
+    wsEndpoint: mode === "connect" ? merged.wsEndpoint : undefined,
     timeout: merged.timeout,
     port: merged.port,
     account: merged.account,

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   clampJsonByBytes,
+  clampedTextResult,
   getByPath,
   pickByPaths,
 } from "../src/tools/common.js";
@@ -56,6 +57,20 @@ test("clampJsonByBytes returns truncated marker when payload exceeds maxBytes", 
   assert.ok(typeof result.value === "string" && result.value.includes("[truncated"));
 });
 
+test("clampJsonByBytes reports the actual number of dropped bytes", () => {
+  const big = { text: "a".repeat(2000) };
+  const maxBytes = 100;
+  const result = clampJsonByBytes(big, maxBytes);
+  assert.equal(result.truncated, true);
+  const valueStr = result.value as string;
+  const head = valueStr.split("...[truncated")[0];
+  const droppedReported = Number(/\[truncated (\d+)B\]/.exec(valueStr)?.[1]);
+  const headBytes = Buffer.byteLength(head, "utf8");
+  // dropped = total bytes - bytes actually kept in head (not the naive total - maxBytes)
+  assert.equal(droppedReported, result.bytes - headBytes);
+  assert.ok(droppedReported >= result.bytes - maxBytes);
+});
+
 test("clampJsonByBytes leaves payload intact when below maxBytes", () => {
   const small = { ok: true };
   const result = clampJsonByBytes(small, 1024);
@@ -70,24 +85,62 @@ test("clampJsonByBytes leaves payload intact when maxBytes omitted", () => {
   assert.deepEqual(result.value, payload);
 });
 
-test("clampJsonByBytes truncates multibyte content without exceeding maxBytes head budget", () => {
+test("clampJsonByBytes truncates multibyte content within the serialized budget", () => {
   const payload = { text: "中文文本".repeat(500) + "🎉".repeat(100) };
   const maxBytes = 200;
   const result = clampJsonByBytes(payload, maxBytes);
   assert.equal(result.truncated, true);
   assert.equal(typeof result.value, "string");
-  // head + suffix marker; head must not exceed (maxBytes - 32) bytes; total may add the suffix marker.
   const valueStr = result.value as string;
   assert.ok(valueStr.includes("[truncated"));
-  // Ensure head portion (before "...[truncated") is byte-bounded by the budget.
-  const headOnly = valueStr.split("...[truncated")[0];
-  const headBytes = Buffer.byteLength(headOnly, "utf8");
   assert.ok(
-    headBytes <= maxBytes - 32,
-    `head bytes ${headBytes} exceeds budget ${maxBytes - 32}`
+    Buffer.byteLength(JSON.stringify(valueStr), "utf8") <= maxBytes,
+    "serialized truncated value exceeds maxBytes"
   );
   // Should not contain the U+FFFD replacement char from a partial multibyte cut.
   assert.ok(!valueStr.includes("�"), "must not contain U+FFFD replacement");
+});
+
+test("clampJsonByBytes accounts for JSON escaping in the truncated value", () => {
+  const maxBytes = 200;
+  for (const text of [
+    "\\".repeat(1000),
+    "\"".repeat(1000),
+    "\n".repeat(1000),
+    "中文🎉".repeat(1000),
+  ]) {
+    const result = clampJsonByBytes({ text }, maxBytes);
+    assert.equal(result.truncated, true);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(result.value), "utf8") <= maxBytes,
+      `serialized truncated value exceeded ${maxBytes} bytes`
+    );
+  }
+});
+
+test("clampJsonByBytes handles budgets too small for a truncation marker", () => {
+  const result = clampJsonByBytes({ text: "large" }, 1);
+  assert.equal(result.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.value), "utf8") <= 1);
+});
+
+test("clampedTextResult keeps the final text inside maxBytes", () => {
+  const maxBytes = 100;
+  const result = clampedTextResult(
+    {
+      selector: "s".repeat(1000),
+      payload: "x".repeat(5000),
+    },
+    maxBytes,
+    {
+      identity: { selector: "s".repeat(1000) },
+      note: "n".repeat(1000),
+    }
+  );
+  const text = result.content[0].type === "text" ? result.content[0].text : "";
+
+  assert.ok(Buffer.byteLength(text, "utf8") <= maxBytes);
+  assert.equal(JSON.parse(text).truncated, true);
 });
 
 test("getByPath does not walk Object prototype", () => {
@@ -102,6 +155,17 @@ test("getByPath returns own property values normally", () => {
   const target = { ok: true, nested: { v: 7 } };
   assert.equal(getByPath(target, "ok"), true);
   assert.equal(getByPath(target, "nested.v"), 7);
+});
+
+test("pickByPaths keeps __proto__ as data without polluting the result prototype", () => {
+  const source = Object.create(null) as Record<string, unknown>;
+  source.__proto__ = { polluted: true };
+
+  const result = pickByPaths(source, ["__proto__"]);
+
+  assert.equal(Object.getPrototypeOf(result.values), Object.prototype);
+  assert.deepEqual(result.values.__proto__, { polluted: true });
+  assert.equal(({} as { polluted?: boolean }).polluted, undefined);
 });
 
 test("getByPath returns undefined for non-numeric segments on arrays except length", () => {

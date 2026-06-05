@@ -1,8 +1,19 @@
 import { strict as assert } from "node:assert";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { ConfigError, resolveConfig } from "../src/config.js";
+import { createApplicationTools } from "../src/tools/application.js";
 import { WeappAutomatorManager } from "../src/weappClient.js";
+
+const logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
 
 test("resolveConfig requires wsEndpoint for strict connect mode", () => {
   assert.throws(
@@ -34,6 +45,27 @@ test("diagnoseConnection reports missing ws endpoint in connect mode", async () 
 
   assert.equal(diagnosis.reasonCode, "INVALID_WS_ENDPOINT");
   assert.equal(diagnosis.allowAutoLaunch, false);
+});
+
+test("invalid config diagnosis still reports the persisted default project", async () => {
+  const manager = new WeappAutomatorManager();
+  (manager as any).getDefaultProject = async () => "/projects/default";
+  (manager as any).isDevToolsProcessRunning = async () => false;
+
+  const diagnosis = await manager.diagnoseConnection(
+    {
+      mode: "connect",
+      wsEndpoint: "ws://127.0.0.1:9420",
+      port: 0,
+      args: undefined,
+    } as any,
+    { strictMode: false }
+  );
+
+  assert.equal(diagnosis.reasonCode, "INVALID_CONNECTION_CONFIG");
+  assert.equal(diagnosis.projectPath, null);
+  assert.equal(diagnosis.defaultProjectPath, "/projects/default");
+  assert.equal(diagnosis.projectConfigured, true);
 });
 
 test("diagnoseConnection reports invalid ws endpoint without switching port", async () => {
@@ -129,6 +161,100 @@ test("diagnoseConnection keeps explicit connect target without port fallback", a
     (manager as any).probeHttpEndpoint = originalProbeHttp;
     (manager as any).isDevToolsProcessRunning = originalProcess;
   }
+});
+
+test("diagnoseConnection treats an explicit wsEndpoint as authoritative over port", async () => {
+  const manager = new WeappAutomatorManager();
+  const probedPorts: number[] = [];
+  (manager as any).isPortInUse = async (port: number) => {
+    probedPorts.push(port);
+    return false;
+  };
+  (manager as any).probeWebSocketEndpoint = async () => ({
+    ok: false,
+    error: "ECONNREFUSED",
+  });
+  (manager as any).probeHttpEndpoint = async () => ({
+    ok: false,
+    statusCode: null,
+    bodySnippet: null,
+    error: "ECONNREFUSED",
+  });
+  (manager as any).isDevToolsProcessRunning = async () => false;
+
+  const diagnosis = await manager.diagnoseConnection(
+    {
+      mode: "connect",
+      wsEndpoint: "ws://127.0.0.1:9420",
+      port: 9421,
+      args: undefined,
+    },
+    { strictMode: false }
+  );
+
+  assert.deepEqual(probedPorts, [9420]);
+  assert.equal(diagnosis.port, 9420);
+  assert.equal(diagnosis.launchPort, 9420);
+});
+
+test("diagnoseConnection does not report a stale persisted project as configured", async () => {
+  const manager = new WeappAutomatorManager();
+  (manager as any).loadProjectPath = async () => "/stale/project";
+  (manager as any).isValidWeappProject = async () => false;
+  (manager as any).isPortInUse = async () => false;
+  (manager as any).probeWebSocketEndpoint = async () => ({
+    ok: false,
+    error: "ECONNREFUSED",
+  });
+  (manager as any).probeHttpEndpoint = async () => ({
+    ok: false,
+    statusCode: null,
+    bodySnippet: null,
+    error: "ECONNREFUSED",
+  });
+  (manager as any).isDevToolsProcessRunning = async () => false;
+
+  const diagnosis = await manager.diagnoseConnection(
+    {
+      mode: "connect",
+      wsEndpoint: "ws://127.0.0.1:9420",
+      args: undefined,
+    },
+    { strictMode: false }
+  );
+
+  assert.equal(diagnosis.projectPath, null);
+  assert.equal(diagnosis.projectConfigured, false);
+});
+
+test("connect diagnosis does not report the persisted default as the active project", async () => {
+  const manager = new WeappAutomatorManager();
+  (manager as any).getDefaultProject = async () => "/projects/default";
+  (manager as any).isPortInUse = async () => false;
+  (manager as any).probeWebSocketEndpoint = async () => ({
+    ok: false,
+    error: "ECONNREFUSED",
+  });
+  (manager as any).probeHttpEndpoint = async () => ({
+    ok: false,
+    statusCode: null,
+    bodySnippet: null,
+    error: "ECONNREFUSED",
+  });
+  (manager as any).isDevToolsProcessRunning = async () => false;
+
+  const diagnosis = await manager.diagnoseConnection(
+    {
+      mode: "connect",
+      wsEndpoint: "ws://127.0.0.1:9420",
+      args: undefined,
+    },
+    { strictMode: false }
+  );
+
+  assert.equal(diagnosis.projectPath, null);
+  assert.equal(diagnosis.defaultProjectPath, "/projects/default");
+  assert.equal(diagnosis.projectConfigured, true);
 });
 
 test("withMiniProgram auto-launches via cli auto when port is not listening", async () => {
@@ -284,8 +410,11 @@ test("withMiniProgram triggers cli auto and proceeds to connect when port become
   const originalWaitForPort = (manager as any).waitForPortListening;
   const originalSaveProjectPath = (manager as any).saveProjectPath;
   const originalAttachLogging = (manager as any).attachLogging;
+  const originalPersistStateMeta = (manager as any).persistStateMeta;
 
   let launchCalled = false;
+  let launchWaitTimeout: number | null = null;
+  let connectedProjectPath: string | undefined;
   (manager as any).isPortInUse = async () => false;
   (manager as any).probeWebSocketEndpoint = async () => ({ ok: false, error: "ECONNREFUSED" });
   (manager as any).probeHttpEndpoint = async () => ({
@@ -300,9 +429,13 @@ test("withMiniProgram triggers cli auto and proceeds to connect when port become
   (manager as any).launchDevTools = async () => {
     launchCalled = true;
   };
-  (manager as any).waitForPortListening = async () => true;
+  (manager as any).waitForPortListening = async (_port: number, timeoutMs: number) => {
+    launchWaitTimeout = timeoutMs;
+    return true;
+  };
   (manager as any).saveProjectPath = async () => {};
   (manager as any).attachLogging = () => {};
+  (manager as any).persistStateMeta = async () => {};
   const fakeMiniProgram = {
     on: () => {},
     removeAllListeners: () => {},
@@ -324,13 +457,19 @@ test("withMiniProgram triggers cli auto and proceeds to connect when port become
         overrides: {
           mode: "connect",
           wsEndpoint: "ws://127.0.0.1:9420",
+          launchTimeout: 12345,
           args: undefined,
         },
       },
-      async () => "ok"
+      async (_miniProgram, config) => {
+        connectedProjectPath = config.projectPath;
+        return "ok";
+      }
     );
     assert.equal(result, "ok");
     assert.equal(launchCalled, true);
+    assert.equal(launchWaitTimeout, 12345);
+    assert.equal(connectedProjectPath, "/tmp/fake-mp");
   } finally {
     (manager as any).isPortInUse = originalPortInUse;
     (manager as any).probeWebSocketEndpoint = originalProbeWs;
@@ -344,6 +483,7 @@ test("withMiniProgram triggers cli auto and proceeds to connect when port become
     (manager as any).saveProjectPath = originalSaveProjectPath;
     (manager as any).attachLogging = originalAttachLogging;
     await manager.close();
+    (manager as any).persistStateMeta = originalPersistStateMeta;
   }
 });
 
@@ -382,5 +522,134 @@ test("diagnoseConnection blocks launch when DevTools process is already running"
     (manager as any).probeWebSocketEndpoint = originalProbeWs;
     (manager as any).probeHttpEndpoint = originalProbeHttp;
     (manager as any).isDevToolsProcessRunning = originalProcess;
+  }
+});
+
+test("project selection uses 1-based indices and keeps candidates after invalid input", async () => {
+  const manager = new WeappAutomatorManager();
+  const projects = [
+    { name: "A", path: "/projects/a" },
+    { name: "B", path: "/projects/b" },
+  ];
+  (manager as any).pendingProjects = projects;
+  (manager as any).savePendingProjects = async () => {};
+
+  assert.equal(await manager.consumePendingProject("0"), null);
+  assert.deepEqual(manager.getPendingProjects(), projects);
+  assert.deepEqual(await manager.consumePendingProject("1"), projects[0]);
+});
+
+test("project selection rejects ambiguous names without consuming candidates", async () => {
+  const manager = new WeappAutomatorManager();
+  const projects = [
+    { name: "demo", path: "/projects/a/demo" },
+    { name: "demo", path: "/projects/b/demo" },
+  ];
+  (manager as any).pendingProjects = projects;
+  (manager as any).savePendingProjects = async () => {};
+
+  assert.equal(await manager.consumePendingProject("demo"), null);
+  assert.deepEqual(manager.getPendingProjects(), projects);
+  assert.deepEqual(await manager.consumePendingProject("/projects/b/demo"), projects[1]);
+});
+
+test("mp_listProjects returns 1-based indices and seeds project selection", async () => {
+  const manager = new WeappAutomatorManager();
+  const projects = [
+    { name: "A", path: "/projects/a" },
+    { name: "B", path: "/projects/b" },
+  ];
+  let pendingProjects: typeof projects | null = null;
+  (manager as any).listRecentProjects = async () => projects;
+  (manager as any).getDefaultProject = async () => null;
+  (manager as any).setPendingProjects = async (pending: typeof projects) => {
+    pendingProjects = pending;
+  };
+
+  const tool = createApplicationTools(manager).find((candidate) => candidate.name === "mp_listProjects");
+  const result = await (tool as any).execute({}, { log: logger });
+  const payload = JSON.parse(result.content[0].text);
+
+  assert.deepEqual(payload.projects.map((project: { index: number }) => project.index), [1, 2]);
+  assert.deepEqual(pendingProjects, projects);
+});
+
+test("mp_healthCheck reports disconnected state without calling withMiniProgram", async () => {
+  const manager = new WeappAutomatorManager();
+  let withMiniProgramCalled = false;
+  let activePageSnapshotCalled = false;
+  (manager as any).withMiniProgram = async () => {
+    withMiniProgramCalled = true;
+    throw new Error("healthCheck must not establish a session");
+  };
+  (manager as any).getConnectionSnapshot = async () => ({
+    devtoolsOnline: false,
+    wsReachable: false,
+    automatorConnected: false,
+    connectionMode: "connect",
+    projectPath: null,
+    wsEndpoint: "ws://127.0.0.1:9420",
+    port: 9420,
+    sessionId: null,
+  });
+  (manager as any).getLogStatus = async () => ({
+    listenerAttached: false,
+    lastLogAt: null,
+    lastListenerBindAt: null,
+    logStoreMode: "persisted",
+    sessionId: null,
+    sourceProjectPath: null,
+    logCount: 0,
+    recentTypes: [],
+  });
+  (manager as any).getActivePageSnapshot = async () => {
+    activePageSnapshotCalled = true;
+    return null;
+  };
+
+  const tool = createApplicationTools(manager).find((candidate) => candidate.name === "mp_healthCheck");
+  const result = await (tool as any).execute({}, { log: logger });
+  const payload = JSON.parse(result.content[0].text);
+
+  assert.equal(withMiniProgramCalled, false);
+  assert.equal(activePageSnapshotCalled, false);
+  assert.equal(payload.summary, "disconnected");
+  assert.equal(payload.needsRecovery, true);
+});
+
+test("persisted state writes are serialized and use independent temp files", async () => {
+  const originalConfigFile = (WeappAutomatorManager as any).CONFIG_FILE;
+  const tempDir = await mkdtemp(join(tmpdir(), "weapp-mcp-state-"));
+  const configFile = join(tempDir, "state.json");
+  (WeappAutomatorManager as any).CONFIG_FILE = configFile;
+  const managers = [new WeappAutomatorManager(), new WeappAutomatorManager()];
+  const baseState = {
+    lastProjectPath: null,
+    pendingProjects: [],
+    consoleLogs: [],
+    sessionId: null,
+    listenerAttached: false,
+    lastLogAt: null,
+    lastListenerBindAt: null,
+    logStoreMode: "persisted",
+    sourceProjectPath: null,
+  };
+
+  try {
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, (_, index) =>
+        (managers[index % managers.length] as any).writePersistedState({
+          ...baseState,
+          lastProjectPath: `/projects/${index}`,
+        })
+      )
+    );
+    assert.equal(results.filter((result) => result.status === "rejected").length, 0);
+    const persisted = await readFile(configFile, "utf-8");
+    assert.doesNotThrow(() => JSON.parse(persisted));
+    assert.deepEqual(await readdir(tempDir), ["state.json"]);
+  } finally {
+    (WeappAutomatorManager as any).CONFIG_FILE = originalConfigFile;
+    await rm(tempDir, { recursive: true, force: true });
   }
 });
