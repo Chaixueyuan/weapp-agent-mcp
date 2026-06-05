@@ -205,20 +205,20 @@ export class WeappAutomatorManager {
     if (this.pendingProjects.length === 0) {
       this.pendingProjects = await this.loadPendingProjects();
     }
-    
+
     const trimmed = selection.trim();
-    
+
     // 验证编号格式（必须是纯数字）
     const index = parseInt(trimmed, 10) - 1;
     const isValidIndex = /^\d+$/.test(trimmed) && index >= 0 && index < this.pendingProjects.length;
-    
+
     if (isValidIndex) {
       const selected = this.pendingProjects[index];
       this.pendingProjects = [];
       await this.savePendingProjects([]);
       return selected;
     }
-    
+
     // 尝试解析路径（直接匹配）
     const byPath = this.pendingProjects.find((project) => project.path === trimmed);
     if (byPath) {
@@ -233,7 +233,7 @@ export class WeappAutomatorManager {
       await this.savePendingProjects([]);
       return byName[0];
     }
-    
+
     return null;
   }
   
@@ -606,7 +606,16 @@ export class WeappAutomatorManager {
           .then((stat) => Date.now() - stat.mtimeMs > 30000)
           .catch(() => false);
         if (stale) {
-          await fs.promises.unlink(lockPath).catch(() => undefined);
+          // 原子抢占：用 rename 把陈旧锁移到本进程独占的临时名，只有 rename 成功的
+          // 进程才算"偷到"了锁；rename 失败（已被他人抢走/释放）就回到 open('wx') 重试，
+          // 避免多个进程各自 unlink 误删别人刚创建的新锁导致两个写者同入临界区。
+          const stolenPath = `${lockPath}.${process.pid}.${randomUUID()}.stolen`;
+          try {
+            await fs.promises.rename(lockPath, stolenPath);
+            await fs.promises.unlink(stolenPath).catch(() => undefined);
+          } catch {
+            // 另一个进程已抢走或锁已释放；回到循环重试 open('wx')。
+          }
           continue;
         }
         if (Date.now() - startedAt > 5000) {
@@ -616,11 +625,48 @@ export class WeappAutomatorManager {
       }
     }
 
+    // 持锁期间周期性刷新 mtime，避免较慢的 operation()（>30s）被其他进程误判为 stale
+    // 而抢走锁——只有真正卡死/崩溃（不再刷新）的持锁者才会被判定 stale。
+    const heartbeat = setInterval(() => {
+      const now = new Date();
+      fs.promises.utimes(lockPath, now, now).catch(() => undefined);
+    }, 10000);
+    if (typeof heartbeat.unref === "function") {
+      heartbeat.unref();
+    }
+
     try {
+      await this.cleanupOrphanStateTempFiles();
       return await operation();
     } finally {
+      clearInterval(heartbeat);
       await lockHandle.close().catch(() => undefined);
       await fs.promises.unlink(lockPath).catch(() => undefined);
+    }
+  }
+
+  private async cleanupOrphanStateTempFiles(): Promise<void> {
+    // 进程在持锁/写 tmp 期间被强杀（kill -9）会遗留
+    // `${CONFIG_FILE}.${pid}.${uuid}.tmp`。持有锁时不会有其他进程在写，故可安全清理
+    // 足够旧的孤儿临时文件，避免它们在 home 目录里无限累积。
+    try {
+      const configDir = path.dirname(WeappAutomatorManager.CONFIG_FILE);
+      const base = path.basename(WeappAutomatorManager.CONFIG_FILE);
+      const entries = await fs.promises.readdir(configDir);
+      const now = Date.now();
+      await Promise.all(
+        entries
+          .filter((name) => name.startsWith(`${base}.`) && name.endsWith(".tmp"))
+          .map(async (name) => {
+            const full = path.join(configDir, name);
+            const stat = await fs.promises.stat(full).catch(() => null);
+            if (stat && now - stat.mtimeMs > 30000) {
+              await fs.promises.unlink(full).catch(() => undefined);
+            }
+          })
+      );
+    } catch {
+      // best-effort 清理，失败忽略。
     }
   }
 
@@ -2500,6 +2546,24 @@ Next step：
       Buffer.concat(stdoutChunks).toString("utf8").trim(),
       autoArgs
     );
+
+    // 观察窗已结束、stdout/stderr 已捕获：解除监听并排空管道，避免 detached 子进程的
+    // data/exit/error 监听器与 8KB 缓冲区闭包一直被引用（每次 auto-launch 滞留一份，
+    // 直到 server 退出）。用 resume() 持续丢弃后续输出而非 destroy()，以免向仍存活的
+    // IDE 写端发 SIGPIPE。
+    const drainStream = (stream: unknown): void => {
+      const s = stream as
+        | { removeAllListeners?: (event: string) => void; resume?: () => void }
+        | null
+        | undefined;
+      if (!s) return;
+      if (typeof s.removeAllListeners === "function") s.removeAllListeners("data");
+      if (typeof s.resume === "function") s.resume();
+    };
+    drainStream(proc.stdout);
+    drainStream(proc.stderr);
+    proc.removeAllListeners("exit");
+    proc.removeAllListeners("error");
 
     if (exited && earlyExitCode !== 0) {
       const reason =

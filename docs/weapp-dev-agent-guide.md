@@ -113,10 +113,12 @@
 - `page_waitElement`
 - `page_waitElementGone`
 - `page_waitRoute`
+- `mp_pollUntil`
 
 建议：
 - 路由跳转确认优先使用 `page_waitRoute`
 - loading、toast、弹层消失可优先用 `page_waitElementGone`
+- 等待「任意非元素条件」（如 `page.data` 某字段变化、异步状态机就绪）用 `mp_pollUntil`：轮询 AppService 表达式，命中后可执行动作并采集命中前后快照
 
 ## 工具分层理解
 
@@ -179,15 +181,14 @@
 ### 场景 A：页面调试
 
 推荐顺序：
-1. `mp_ensureConnection`
-2. `mp_currentPage`
-3. `mp_screenshot`
-4. `page_getElements` / `page_getElement`
-5. `element_tap` / `element_input`
-6. 再次 `mp_currentPage` / `mp_screenshot`
-7. 需要时用 `page_waitRoute` 或 `page_waitElementGone`
-8. 动作完成后，用 `page_expectRoute` / `page_expectVisible` / `page_expectElementText` / `page_expectCount` / `page_expectData` 做结构化断言
-9. 若要校验页面标题，必须明确是原生标题还是自定义标题；自定义标题用明确选择器配合 `page_expectElementText`，不要默认依赖统一 class / id
+1. `mp_ensureConnection`（返回已含当前页路由，可信；无需仅为确认路由而再调 `mp_currentPage`）
+2. `mp_screenshot`
+3. `page_getElements` / `page_getElement`
+4. `element_tap` / `element_input`
+5. 再次 `mp_currentPage` / `mp_screenshot`
+6. 需要时用 `page_waitRoute` 或 `page_waitElementGone`
+7. 动作完成后，用 `page_expectRoute` / `page_expectVisible` / `page_expectElementText` / `page_expectCount` / `page_expectData` 做结构化断言
+8. 若要校验页面标题，必须明确是原生标题还是自定义标题；自定义标题用明确选择器配合 `page_expectElementText`，不要默认依赖统一 class / id
 
 适合：
 - 看页面
@@ -200,10 +201,9 @@
 ### 场景 B：data 调试
 
 推荐顺序：
-1. `mp_ensureConnection`
-2. `mp_currentPage`（必要时 `withData=true`）
-3. `page_getData`
-4. 若超时或不稳定，再考虑 `mp_evaluate`
+1. `mp_ensureConnection`（返回已含当前页路由；仅当需要当前页 `data` 时才用 `mp_currentPage withData=true`）
+2. `page_getData`
+3. 若超时或不稳定，再考虑 `mp_evaluate`
 
 推荐策略：
 - 先走标准 API
@@ -298,7 +298,7 @@
 - 使用 `weapp-agent-mcp` MCP 调试微信小程序。
 - 先 `mp_ensureConnection`；若操作失败，调用 `mp_healthCheck`，仅在 `needsRecovery=true` 时调用 `mp_recoverConnection`。
 - 只读探测或 ensure / recovery 失败后，再调用 `mp_diagnoseConnection`；不要自动切端口。
-- 再 `mp_currentPage`，根据需要使用截图、元素查询、点击与输入。
+- `mp_ensureConnection` 的返回已含 `currentPage`（活动页可信，无需再调 `mp_currentPage` 校验）；根据需要使用截图、元素查询、点击与输入。
 - 页面判断优先依赖页面路径、截图和元素状态。
 - `page_getData` 与 `element_getData` 可用，但若超时不要卡住，必要时改用 `mp_evaluate` 做显式深层读取。
 - 日志通过 `mp_getLogs` 获取，复杂场景结合过滤参数与重连流程使用。

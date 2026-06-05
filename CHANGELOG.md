@@ -13,6 +13,16 @@
 - 工具参数改为严格校验，拒绝未知字段和会被静默忽略的参数组合；CLI 日志同时脱敏 `--ticket` 与 `--auto-account`。
 - 当前截图失败只对 `RENDERER_NOT_READY` 自动重试；超时或未知截图通道失败不会立即并发重发。
 
+### 2026-06-05 多维 review 后的加固（0.4.6 内）
+
+- 跨进程状态锁：陈旧锁改为原子 rename 抢占（避免多进程各自 `unlink` 误删别人刚建的新锁），持锁期间周期刷新 mtime（避免较慢 operation 被误判 stale 抢走）；并在持锁时清理 `kill -9` 遗留的孤儿 `*.tmp`。
+- `page_getData` 截断时保留 `missingPaths`（并入 identity 字段，不再随截断丢失）。
+- `page_expectElementText` 对 `null`/`undefined` 文本归一为空串（恢复 `?? ""`，避免出现字面量 `"null"`）。
+- 截图 direct-temp-file fallback 的内层 evaluate 改用外层剩余预算，避免外层超时后仍作为孤儿请求占用 evaluateQueue。
+- scenario 报告 inline-code 折叠换行/制表符，避免截图路径含控制字符破坏单行 code span。
+- auto-launch 的 detached cli 子进程在观察窗后解除 stdout/stderr/exit/error 监听并排空管道，消除 per-launch 监听器与缓冲区滞留。
+- 测试：新增截图 fallback 注入体真实执行覆盖（成功 + bridge 不可用失败分支）、陈旧锁抢占与孤儿 tmp 清理、`page_getData` 截断保留 missingPaths、`page_expectElementText` 空文本；放宽 `mp_pollUntil` 预算测试的墙钟阈值以降低 CI 抖动。
+
 ## 2026-05-12（0.4.0）
 
 ### 1. 端口未监听时自动 cli auto 起 IDE（核心痛点修复）

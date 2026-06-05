@@ -652,7 +652,7 @@ function createExpectElementTextTool(manager: WeappAutomatorManager): AnyTool {
               const message = error instanceof Error ? error.message : String(error);
               throw new UserError(`读取元素 "${args.selector}" 文本失败: ${message}`);
             }
-            const normalized = typeof actual === "string" ? actual : String(actual);
+            const normalized = typeof actual === "string" ? actual : String(actual ?? "");
             const pass = args.mode === "includes"
               ? normalized.includes(args.expected)
               : normalized === args.expected;
@@ -939,6 +939,8 @@ function createGetPageDataTool(manager: WeappAutomatorManager): AnyTool {
               identity: {
                 path: args.path ?? null,
                 paths: args.paths ?? null,
+                // 截断时也保留诊断价值高、体积小的 missingPaths。
+                missingPaths: missing,
               },
               note: "页面数据结果超过 maxBytes 已截断。建议改用 paths 只读取需要的字段。",
             }

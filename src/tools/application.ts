@@ -768,6 +768,7 @@ async function captureMiniProgramScreenshot(
   path: string | undefined,
   timeoutMs: number
 ): Promise<{ output: string | void; method: "automator" | "direct-temp-file" }> {
+  const startedAt = Date.now();
   try {
     const output = await miniProgram.screenshot(path ? { path } : undefined);
     if (path) {
@@ -822,7 +823,9 @@ async function captureMiniProgramScreenshot(
         }),
       {
         description: "执行截图 direct-temp-file fallback",
-        timeoutMs,
+        // 用外层剩余预算：automator 已消耗一部分时间，避免内层 evaluate 在外层
+        // 整体超时后仍作为孤儿请求长时间占用 evaluateQueue。
+        timeoutMs: Math.max(1, timeoutMs - (Date.now() - startedAt)),
       }
     );
 
@@ -2192,12 +2195,15 @@ function appendMarkdownCodeBlock(
 }
 
 function formatMarkdownInlineCode(value: string): string {
+  // Inline code spans are single-line; collapse newlines/tabs so an embedded
+  // control char in the value (e.g. a screenshot path) cannot break the span.
+  const sanitized = value.replace(/[\r\n\t]+/g, " ");
   const longestRun = Math.max(
     0,
-    ...Array.from(value.matchAll(/`+/g), (match) => match[0].length)
+    ...Array.from(sanitized.matchAll(/`+/g), (match) => match[0].length)
   );
   const fence = "`".repeat(Math.max(1, longestRun + 1));
-  return `${fence} ${value} ${fence}`;
+  return `${fence} ${sanitized} ${fence}`;
 }
 
 async function resolveScenarioElement(page: any, selector: string, innerSelector?: string): Promise<any> {

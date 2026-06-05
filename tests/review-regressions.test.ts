@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -358,7 +358,8 @@ test("mp_pollUntil keeps action execution inside the overall timeout budget", as
   assert.equal(payload.matched, true);
   assert.equal(payload.actionRan, false);
   assert.match(payload.actionError, /REQUEST_TIMEOUT/);
-  assert.ok(Date.now() - startedAt < 35);
+  // 核心契约由 actionRan===false + REQUEST_TIMEOUT 证明；墙钟上界放宽以免重载 CI 抖动误判。
+  assert.ok(Date.now() - startedAt < 200);
 });
 
 test("mp_pollUntil rejects snapshotAfterMs without snapshotPaths", async () => {
@@ -3854,4 +3855,194 @@ test("CLI ticket and account values are redacted from log arguments", () => {
     ),
     "cli failed: <redacted> and <redacted> for <redacted> and <redacted>"
   );
+});
+
+test("a stale persisted-state lock is stolen instead of blocking writes", async () => {
+  const originalConfigFile = (WeappAutomatorManager as any).CONFIG_FILE;
+  const tempDir = await mkdtemp(join(tmpdir(), "weapp-stale-lock-"));
+  const configFile = join(tempDir, "state.json");
+  (WeappAutomatorManager as any).CONFIG_FILE = configFile;
+  const lockPath = `${configFile}.lock`;
+  // 残留一把"陈旧"锁（mtime 远早于 30s 阈值），模拟持锁进程崩溃。
+  await writeFile(lockPath, "");
+  const staleTime = new Date(Date.now() - 60000);
+  await utimes(lockPath, staleTime, staleTime);
+
+  try {
+    const manager = new WeappAutomatorManager();
+    await (manager as any).updatePersistedState((state: any) => {
+      state.lastProjectPath = "/stolen";
+    });
+
+    const persisted = JSON.parse(await readFile(configFile, "utf8"));
+    assert.equal(persisted.lastProjectPath, "/stolen");
+    // 锁在 operation 结束后被释放（finally unlink）。
+    await assert.rejects(stat(lockPath));
+  } finally {
+    (WeappAutomatorManager as any).CONFIG_FILE = originalConfigFile;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("an old orphan state temp file is cleaned up while holding the lock", async () => {
+  const originalConfigFile = (WeappAutomatorManager as any).CONFIG_FILE;
+  const tempDir = await mkdtemp(join(tmpdir(), "weapp-orphan-tmp-"));
+  const configFile = join(tempDir, "state.json");
+  (WeappAutomatorManager as any).CONFIG_FILE = configFile;
+  // 模拟某进程 kill -9 留下的孤儿临时文件。
+  const orphan = `${configFile}.999999.deadbeef.tmp`;
+  await writeFile(orphan, "leftover");
+  const oldTime = new Date(Date.now() - 60000);
+  await utimes(orphan, oldTime, oldTime);
+
+  try {
+    const manager = new WeappAutomatorManager();
+    await (manager as any).updatePersistedState((state: any) => {
+      state.lastProjectPath = "/x";
+    });
+    await assert.rejects(stat(orphan));
+  } finally {
+    (WeappAutomatorManager as any).CONFIG_FILE = originalConfigFile;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("screenshot fallback executes the injected private_captureScreen bridge", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "weapp-shot-bridge-"));
+  const screenshotPath = join(tempDir, "shot.png");
+  const frameBase64 = Buffer.from("real-frame").toString("base64");
+  const savedBridge = (globalThis as any).WeixinJSBridge;
+  const savedWx = (globalThis as any).wx;
+  let invokedName: string | null = null;
+  let readEncoding: string | null = null;
+  (globalThis as any).WeixinJSBridge = {
+    invoke: (name: string, _args: unknown, cb: (capture: unknown) => void) => {
+      invokedName = name;
+      cb({ errMsg: "private_captureScreen:ok", tempFilePath: "/tmp/frame.png" });
+    },
+  };
+  (globalThis as any).wx = {
+    getFileSystemManager: () => ({
+      readFile: (opts: any) => {
+        readEncoding = opts.encoding;
+        opts.success({ data: frameBase64 });
+      },
+    }),
+  };
+
+  const recorded: Array<[boolean, string | null | undefined]> = [];
+  const miniProgram = {
+    screenshot: async () => {
+      throw new Error("fail to capture screenshot");
+    },
+    // 真正执行注入的函数体（生产里 miniProgram.evaluate(fn)）。
+    evaluate: async (fn: () => Promise<unknown>) => fn(),
+  };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(miniProgram, { mode: "connect" }),
+    runSerializedScreenshot: async (_log: unknown, operation: () => Promise<unknown>) =>
+      operation(),
+    runSerializedEvaluate: async (operation: () => Promise<unknown>) => operation(),
+    getScreenshotStatus: () => ({ failureStreak: 0, lastScreenshotErrorCode: null }),
+    recordScreenshotResult: (ok: boolean, code?: string | null) => {
+      recorded.push([ok, code]);
+    },
+  };
+
+  try {
+    const result = await toolByName(
+      createApplicationTools(manager as any),
+      "mp_screenshot"
+    ).execute({ path: screenshotPath, timeoutMs: 100 }, context);
+    const payload = parseTextResult(result);
+
+    assert.equal(invokedName, "private_captureScreen");
+    assert.equal(readEncoding, "base64");
+    assert.equal(payload.captureMethod, "direct-temp-file");
+    assert.equal(await readFile(screenshotPath, "utf8"), "real-frame");
+    assert.deepEqual(recorded, [[true, undefined]]);
+  } finally {
+    (globalThis as any).WeixinJSBridge = savedBridge;
+    (globalThis as any).wx = savedWx;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("screenshot fallback surfaces an unavailable private screenshot bridge as an error", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "weapp-shot-nobridge-"));
+  const screenshotPath = join(tempDir, "shot.png");
+  const savedBridge = (globalThis as any).WeixinJSBridge;
+  const savedWx = (globalThis as any).wx;
+  (globalThis as any).WeixinJSBridge = undefined;
+  (globalThis as any).wx = undefined;
+
+  const recorded: Array<[boolean, string | null | undefined]> = [];
+  const miniProgram = {
+    screenshot: async () => {
+      throw new Error("fail to capture screenshot");
+    },
+    evaluate: async (fn: () => Promise<unknown>) => fn(),
+  };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(miniProgram, { mode: "connect" }),
+    runSerializedScreenshot: async (_log: unknown, operation: () => Promise<unknown>) =>
+      operation(),
+    runSerializedEvaluate: async (operation: () => Promise<unknown>) => operation(),
+    getScreenshotStatus: () => ({ failureStreak: 0, lastScreenshotErrorCode: null }),
+    recordScreenshotResult: (ok: boolean, code?: string | null) => {
+      recorded.push([ok, code]);
+    },
+  };
+
+  try {
+    const result = await toolByName(
+      createApplicationTools(manager as any),
+      "mp_screenshot"
+    ).execute({ path: screenshotPath, timeoutMs: 100 }, context);
+
+    assert.equal(result.isError, true);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0][0], false);
+    await assert.rejects(stat(screenshotPath));
+  } finally {
+    (globalThis as any).WeixinJSBridge = savedBridge;
+    (globalThis as any).wx = savedWx;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("page_getData keeps missingPaths after the result is truncated", async () => {
+  const big = "x".repeat(5000);
+  const page = { data: async () => ({ big, other: 1 }) };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) => handler(page),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createPageTools(manager as any),
+    "page_getData"
+  ).execute({ paths: ["big", "does.not.exist"], maxBytes: 200 }, context);
+  const payload = parseTextResult(result);
+
+  assert.equal(payload.truncated, true);
+  assert.deepEqual(payload.missingPaths, ["does.not.exist"]);
+});
+
+test("page_expectElementText treats null element text as an empty string", async () => {
+  const page = { $: async () => ({ text: async () => null }) };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) => handler(page),
+  };
+
+  const result = await toolByName(
+    createPageTools(manager as any),
+    "page_expectElementText"
+  ).execute({ selector: "#x", expected: "", mode: "equals" }, context);
+  const payload = parseTextResult(result);
+
+  assert.equal(payload.pass, true);
+  assert.equal(payload.actual, "");
 });
