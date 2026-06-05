@@ -21,8 +21,28 @@ export { booleanish, numberish };
 export type ToolContext = Context<Record<string, unknown> | undefined>;
 export type AnyTool = Tool<Record<string, unknown> | undefined>;
 
+// connection 覆盖字段：对外 emit 成不透明 object（省去每个工具内联 15 字段 ~800B 的重复
+// schema，44 工具合计 ~35KB/tools-list），但在 parse 时仍用严格的 connectionOverridesSchema
+// 校验——保留"开 session 前就拒绝未知/非法 connection 字段"的既有契约。
+const connectionOverrideField = z
+  .record(z.string(), z.unknown())
+  .transform((value, ctx) => {
+    const parsed = connectionOverridesSchema.safeParse(value);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+      }
+      return z.NEVER;
+    }
+    return parsed.data;
+  })
+  .describe(
+    "可选连接覆盖（不传则用默认会话）。可用字段：mode(launch|connect)、cliPath、projectPath、wsEndpoint、timeout、port、account、ticket、trustProject、args、cwd、autoClose、autoLaunch、launchTimeout、connectTimeout。"
+  )
+  .optional();
+
 export const connectionContainerSchema = z.object({
-  connection: connectionOverridesSchema.optional(),
+  connection: connectionOverrideField,
 }).strict();
 
 export const connectionOnlyParameters = connectionContainerSchema;

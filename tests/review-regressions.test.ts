@@ -4170,3 +4170,25 @@ test("element_getBoundingClientRect clamps an oversized dataset by maxBytes", as
   assert.equal(payload.truncated, true);
   assert.equal(payload.selector, ".card");
 });
+
+test("slim connection schema still rejects unknown sub-fields before opening a session", async () => {
+  let sessionCalls = 0;
+  const manager = {
+    withMiniProgram: async () => {
+      sessionCalls += 1;
+      throw new Error("must not open a session");
+    },
+    withPage: async () => {
+      sessionCalls += 1;
+      throw new Error("must not open a page");
+    },
+  };
+
+  const bad = await toolByName(
+    createApplicationTools(manager as any),
+    "mp_currentPage"
+  ).execute({ connection: { bogus: 1 } }, context);
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /Invalid parameters/);
+  assert.equal(sessionCalls, 0);
+});
