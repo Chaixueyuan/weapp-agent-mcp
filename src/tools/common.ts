@@ -37,7 +37,7 @@ const connectionOverrideField = z
     return parsed.data;
   })
   .describe(
-    "可选连接覆盖（不传则用默认会话）。可用字段：mode(launch|connect)、cliPath、projectPath、wsEndpoint、timeout、port、account、ticket、trustProject、args、cwd、autoClose、autoLaunch、launchTimeout、connectTimeout。"
+    "可选连接覆盖（不传则用默认会话）。可用字段：mode(launch|connect)、cliPath、projectPath、wsEndpoint、timeout、port(【自动化端口】→ cli auto --auto-port，默认 9420；不是 IDE HTTP 服务端口，别把 IDE 服务端口传进来)、account、ticket、trustProject、args、cwd、autoClose、autoLaunch、launchTimeout、connectTimeout。"
   )
   .optional();
 

@@ -1142,7 +1142,7 @@ export class WeappAutomatorManager {
             : "目标端口未监听。请不要自动切端口，先确认微信开发者工具已开启自动化。";
       } else if (looksLikeIdeHttp) {
         reasonCode = "IDE_HTTP_PORT_NOT_WS";
-        suggestion = "当前端口看起来是 IDE HTTP 服务端口，不是自动化 websocket 端口。请不要重复启动 IDE，请确认自动化端口或重新开启自动化。";
+        suggestion = "当前端口看起来是 IDE HTTP 服务端口，不是自动化 websocket 端口。最常见原因：connection.port 传成了 IDE 的服务端口——它应当是【自动化端口】（会传给 cli auto --auto-port，默认 9420），不是 IDE HTTP 端口。请去掉 port 改用默认 9420 重试，或显式传正确的自动化端口；不要重复启动 IDE。";
         allowAutoLaunch = false;
       } else if (!websocketReachable) {
         reasonCode = "AUTOMATION_NOT_ENABLED";

@@ -114,6 +114,8 @@ test("diagnoseConnection identifies HTTP-like endpoint as non-launch-safe", asyn
     assert.equal(diagnosis.looksLikeIdeHttp, true);
     assert.equal(diagnosis.reasonCode, "IDE_HTTP_PORT_NOT_WS");
     assert.equal(diagnosis.allowAutoLaunch, false);
+    // 提示要点明"传错了端口（应是自动化端口，默认 9420）"，而不只是泛泛说"确认自动化端口"。
+    assert.match(diagnosis.suggestion, /auto-port|9420/);
   } finally {
     (manager as any).isPortInUse = originalPortInUse;
     (manager as any).probeWebSocketEndpoint = originalProbeWs;
