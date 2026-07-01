@@ -11,6 +11,7 @@ import {
   formatJson,
   maxBytesSchema,
   numberish,
+  readCurrentPage,
   resolveElement,
   setOwnEnumerableValue,
   summarizeElement,
@@ -213,7 +214,7 @@ export function createElementTools(
 function createTapElementTool(manager: WeappAutomatorManager): AnyTool {
   return {
     name: "element_tap",
-    description: "模拟点击 WXML 元素(element.tap())。selector 用 CSS 选择器定位;要点击自定义组件内部的元素时,用 selector 定位组件(如 #my-comp 或标签名)、innerSelector 定位组件内部元素 —— 这是 page_* 无法穿透自定义组件时的正确做法。selector 支持 [index=N] 取第 N 个(0 基,仅作用于 selector,innerSelector 内不支持下标)。waitMs:点击后额外等待的毫秒数,用于等待导航/重渲染稳定再做下一步。",
+    description: "模拟点击 WXML 元素(element.tap())。selector 用 CSS 选择器定位;要点击自定义组件内部的元素时,用 selector 定位组件(如 #my-comp 或标签名)、innerSelector 定位组件内部元素 —— 这是 page_* 无法穿透自定义组件时的正确做法。selector 支持 [index=N] 取第 N 个(0 基,仅作用于 selector,innerSelector 内不支持下标)。waitMs:点击后额外等待的毫秒数,用于等待导航/重渲染稳定再做下一步。返回 JSON 含 routeBefore,以及【仅当传了 waitMs>0 时】的 routeAfter/routeChanged —— 直接告诉你点击有没有触发跳转,省去再调一次 mp_currentPage。不传 waitMs 时不额外探测路由(routeAfter/routeChanged 为 null,语义=未探测):此时跳转通常尚未完成、读了也不准还白费一次往返,要判断跳转请传 waitMs 等导航稳定。routeAfter 读取失败时同样降级为 null,不影响点击本身已成功。",
     parameters: tapElementParameters,
     execute: async (rawArgs, context: ToolContext) =>
       withUserErrorResult(async () => {
@@ -223,7 +224,12 @@ function createTapElementTool(manager: WeappAutomatorManager): AnyTool {
       return manager.withPage(
         context.log,
         { overrides: args.connection },
-        async (page) => {
+        async (page, miniProgram) => {
+          const routeBefore =
+            typeof (page as { path?: unknown }).path === "string"
+              ? (page as { path: string }).path
+              : null;
+
           const element = await resolveElement(
             page,
             args.selector,
@@ -239,12 +245,41 @@ function createTapElementTool(manager: WeappAutomatorManager): AnyTool {
             );
           }
 
+          // 仅在调用方等待了(waitMs>0)时才重新解析当前页反馈跳转:不等待时导航通常尚未完成,
+          // 读到的多半还是旧 route(误报 routeChanged=false),且白费一次 currentPage RPC。
+          // 不等待时 routeAfter/routeChanged 留 null(语义=未探测),要判断跳转请传 waitMs。
+          // 读取失败(如导航过程中页面栈瞬态)降级为 null,不影响已成功的 tap。
+          let routeAfter: string | null = null;
           if (waitMs) {
             await waitOnPage(page, waitMs);
+            try {
+              const afterPage = await readCurrentPage(
+                manager,
+                miniProgram,
+                "读取点击后当前页"
+              );
+              routeAfter =
+                afterPage && typeof afterPage.path === "string"
+                  ? afterPage.path
+                  : null;
+            } catch {
+              routeAfter = null;
+            }
           }
 
+          const routeChanged =
+            routeAfter === null ? null : routeBefore !== routeAfter;
+
           return toTextResult(
-            `已点击元素 "${args.selector}"${args.innerSelector ? ` -> "${args.innerSelector}"` : ""}${waitMs ? ` 并等待 ${waitMs}ms` : ""}。`
+            formatJson({
+              selector: args.selector,
+              innerSelector: args.innerSelector ?? null,
+              waitedMs: waitMs ?? 0,
+              routeBefore,
+              routeAfter,
+              routeChanged,
+              message: `已点击元素 "${args.selector}"${args.innerSelector ? ` -> "${args.innerSelector}"` : ""}${waitMs ? ` 并等待 ${waitMs}ms` : ""}。`,
+            })
           );
         }
       );
@@ -1109,11 +1144,24 @@ function createGetBoundingClientRectTool(manager: WeappAutomatorManager): AnyToo
             );
           }
 
+          const rect = result as { width?: unknown; height?: unknown } | null;
+          const zeroSize =
+            !!rect &&
+            typeof rect.width === "number" &&
+            typeof rect.height === "number" &&
+            rect.width === 0 &&
+            rect.height === 0;
+
           return clampedTextResult(
             {
               selector,
               innerSelector: innerSelector ?? null,
               boundingClientRect: toSerializableValue(result),
+              ...(zeroSize
+                ? {
+                    hint: "width/height 均为 0:自定义组件根节点常无自身盒模型(尺寸落在其子节点上),0×0 不一定代表未渲染或不可见。要确认渲染,请改测其内部具体子元素(innerSelector),或用 element_getData / page_waitElement 验证。",
+                  }
+                : {}),
             },
             args.maxBytes,
             {

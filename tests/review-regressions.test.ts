@@ -4262,3 +4262,208 @@ test("mp_pollUntil requires exactly one of predicate or dataPath", async () => {
   assert.equal(both.isError, true);
   assert.match(both.content[0].text, /Invalid parameters/);
 });
+
+test("element_tap reports route change so callers skip a follow-up mp_currentPage", async () => {
+  const element = { tap: async () => {} };
+  const page = { path: "pages/a", waitFor: async () => {}, $: async () => element };
+  const miniProgram = { currentPage: async () => ({ path: "pages/b" }) };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(page, miniProgram, { mode: "connect" }),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  // route 探测仅在 waitMs>0 时触发,故传 waitMs。
+  const result = await toolByName(
+    createElementTools(manager as any),
+    "element_tap"
+  ).execute({ selector: "#go", waitMs: 5 }, context);
+
+  const payload = parseTextResult(result);
+  assert.equal(result.isError, undefined);
+  assert.equal(payload.routeBefore, "pages/a");
+  assert.equal(payload.routeAfter, "pages/b");
+  assert.equal(payload.routeChanged, true);
+});
+
+test("element_tap reports routeChanged=false when a same-page tap does not navigate", async () => {
+  const element = { tap: async () => {} };
+  const page = { path: "pages/a", waitFor: async () => {}, $: async () => element };
+  const miniProgram = { currentPage: async () => ({ path: "pages/a" }) };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(page, miniProgram, { mode: "connect" }),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createElementTools(manager as any),
+    "element_tap"
+  ).execute({ selector: "#noop", waitMs: 5 }, context);
+
+  const payload = parseTextResult(result);
+  assert.equal(result.isError, undefined);
+  assert.equal(payload.routeBefore, "pages/a");
+  assert.equal(payload.routeAfter, "pages/a");
+  // 同页点击必须报 false,不能被误报成跳转。
+  assert.equal(payload.routeChanged, false);
+});
+
+test("element_tap skips the extra currentPage RPC when no waitMs is given", async () => {
+  const element = { tap: async () => {} };
+  const page = { path: "pages/a", $: async () => element };
+  let currentPageCalls = 0;
+  const miniProgram = {
+    currentPage: async () => {
+      currentPageCalls += 1;
+      return { path: "pages/b" };
+    },
+  };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(page, miniProgram, { mode: "connect" }),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createElementTools(manager as any),
+    "element_tap"
+  ).execute({ selector: "#go" }, context);
+
+  const payload = parseTextResult(result);
+  assert.equal(result.isError, undefined);
+  assert.equal(payload.routeBefore, "pages/a");
+  assert.equal(payload.routeAfter, null);
+  assert.equal(payload.routeChanged, null);
+  // 未传 waitMs 不应额外探测路由,省一次 RPC。
+  assert.equal(currentPageCalls, 0);
+});
+
+test("element_tap survives a failed post-tap route read (routeAfter null, tap still ok)", async () => {
+  const element = { tap: async () => {} };
+  const page = { path: "pages/a", waitFor: async () => {}, $: async () => element };
+  const miniProgram = {
+    currentPage: async () => {
+      throw new Error("page stack transient during navigation");
+    },
+  };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(page, miniProgram, { mode: "connect" }),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const result = await toolByName(
+    createElementTools(manager as any),
+    "element_tap"
+  ).execute({ selector: "#go", waitMs: 5 }, context);
+
+  const payload = parseTextResult(result);
+  assert.equal(result.isError, undefined);
+  assert.equal(payload.routeBefore, "pages/a");
+  assert.equal(payload.routeAfter, null);
+  assert.equal(payload.routeChanged, null);
+});
+
+test("element_getBoundingClientRect flags 0x0 rects as possibly-normal custom-component roots", async () => {
+  const originalWx = (globalThis as any).wx;
+  const makeWx = (rect: unknown) => ({
+    createSelectorQuery: () => {
+      const query = {
+        select: () => query,
+        selectAll: () => query,
+        boundingClientRect: () => query,
+        exec: (callback: (result: unknown[]) => void) => callback([rect]),
+      };
+      return query;
+    },
+  });
+  const miniProgram = {
+    evaluate: async (fn: (...args: any[]) => unknown, ...args: any[]) =>
+      fn(...args),
+  };
+  const manager = {
+    withMiniProgram: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(miniProgram),
+    runSerializedEvaluate: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  try {
+    (globalThis as any).wx = makeWx({
+      left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0,
+    });
+    const zero = parseTextResult(
+      await toolByName(createElementTools(manager as any), "element_getBoundingClientRect").execute(
+        { selector: "#root" },
+        context
+      )
+    );
+    assert.ok(typeof zero.hint === "string" && /0×0|width\/height/.test(zero.hint));
+
+    (globalThis as any).wx = makeWx({
+      left: 0, top: 0, right: 10, bottom: 10, width: 10, height: 10,
+    });
+    const sized = parseTextResult(
+      await toolByName(createElementTools(manager as any), "element_getBoundingClientRect").execute(
+        { selector: "#root" },
+        context
+      )
+    );
+    assert.equal(sized.hint, undefined);
+
+    // 守卫 typeof===number:NaN / 缺失 width|height 不得被误判成 0×0。
+    for (const badRect of [
+      { left: 0, top: 0, right: 0, bottom: 0, width: NaN, height: NaN },
+      { left: 0, top: 0 },
+    ]) {
+      (globalThis as any).wx = makeWx(badRect);
+      const guarded = parseTextResult(
+        await toolByName(createElementTools(manager as any), "element_getBoundingClientRect").execute(
+          { selector: "#root" },
+          context
+        )
+      );
+      assert.equal(guarded.hint, undefined);
+    }
+  } finally {
+    (globalThis as any).wx = originalWx;
+  }
+});
+
+test("page_getData echoes the resolved route so silent wrong-page reads become visible", async () => {
+  const page = { path: "pages/web-host", data: async () => ({ foo: 1 }) };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(page),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const payload = parseTextResult(
+    await toolByName(createPageTools(manager as any), "page_getData").execute({}, context)
+  );
+  assert.equal(payload.route, "pages/web-host");
+  assert.deepEqual(payload.data, { foo: 1 });
+
+  // paths 投影模式下 route 仍要回显。
+  const projected = parseTextResult(
+    await toolByName(createPageTools(manager as any), "page_getData").execute(
+      { paths: ["foo"] },
+      context
+    )
+  );
+  assert.equal(projected.route, "pages/web-host");
+});
+
+test("page_getData route is null when the SDK page exposes no string path", async () => {
+  const page = { path: undefined, data: async () => ({ foo: 1 }) };
+  const manager = {
+    withPage: async (_log: unknown, _options: unknown, handler: any) =>
+      handler(page),
+    withRequestTimeout: async (operation: () => Promise<unknown>) => operation(),
+  };
+
+  const payload = parseTextResult(
+    await toolByName(createPageTools(manager as any), "page_getData").execute({}, context)
+  );
+  assert.equal(payload.route, null);
+});

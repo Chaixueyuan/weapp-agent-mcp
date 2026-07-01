@@ -2,6 +2,16 @@
 
 本文件记录当前 `weapp-agent-mcp` 近期完成的关键改动，重点面向后续交接与维护，而不是面向发布营销文案。项目来源于上游 `weapp-dev-mcp` / `@yfme/weapp-dev-mcp`，当前以独立发布为目标继续演进。
 
+## 2026-07-01（0.4.8）
+
+基于第三方 dogfooding 反馈（测试评估 / 体验报告）+ 对抗性多 agent review 的一批可用性改进，均为向后兼容的字段/文案增量：
+
+- `element_tap` 返回结构化 JSON，新增 `routeBefore`/`routeAfter`/`routeChanged`（原文案保留在 `message`），点击后是否发生路由跳转一目了然，省去再调一次 `mp_currentPage`。route 探测仅在传了 `waitMs>0` 时进行——不等待时导航通常尚未完成、读了也不准，且避免每次点击都白发一次 `currentPage` 请求；探测失败降级为 `null`，不影响点击本身已成功。
+- `page_getData` 返回新增 `route` 字段（实际解析到的当前页路由，注意与数据子路径入参 `path` 不同）。web-view 等 DevTools 对 `App.getCurrentPage` 返回不稳定的场景下，能看出「这次 data 到底来自哪个页」，把「静默读到别的页面数据」变成可见，避免误判。
+- `element_getBoundingClientRect` 对自定义组件根节点常见的 `0×0` 矩形附 `hint` 说明（尺寸多落在子节点上，`0×0` 不代表未渲染/不可见，建议改测内部子元素或用 `element_getData` 验证），减少「元素没渲染」的误判。
+- `mp_recoverConnection` 描述明确 launch 模式副作用：重连会退出并重新 launch 小程序（`App.exit` + 关 IDE 窗口 → `cli auto` 冷启），页栈重置回项目启动/入口页、当前页 / `reLaunch` 现场会丢失；connect 模式只断开重连 WS、不重启、不丢页。
+- 测试：新增 `element_tap` 路由跳转 / 未跳转 / 无 waitMs 跳过探测 / 探测失败降级、`element_getBoundingClientRect` 的 `0×0` 与 NaN/缺失守卫、`page_getData` 回显 route（含 paths 投影模式与非字符串路由）等 9 条回归用例。
+
 ## 2026-06-05（0.4.7）
 
 - 澄清 `connection.port` 语义（issue #3）：它是【自动化端口】（会传给 `cli auto --auto-port`，默认 9420），不是 IDE HTTP 服务端口。工具内部一直用 `--auto-port`（自 v0.4.0），无行为变更；本次仅把提示写清楚——`IDE_HTTP_PORT_NOT_WS` 报错现在直接指出「port 多半传成了 IDE 服务端口，去掉用默认 9420 重试」，`connection.port` 字段说明也标注为自动化端口。

@@ -924,8 +924,16 @@ function createGetPageDataTool(manager: WeappAutomatorManager): AnyTool {
             JSON.stringify(resultValue) ?? "",
             "utf8"
           );
+          // route = 实际解析到的当前页路由(注意 path 字段指的是数据子路径入参,二者不同)。
+          // web-view 等场景下 DevTools 的 App.getCurrentPage 可能返回宿主/栈底页,
+          // 回显 route 让「这次 data 到底来自哪个页」可见,避免静默读到别的页面数据。
+          const route =
+            typeof (page as { path?: unknown }).path === "string"
+              ? (page as { path: string }).path
+              : null;
           return clampedTextResult(
             {
+              route,
               path: args.path ?? null,
               paths: args.paths ?? null,
               missingPaths: missing,
@@ -937,6 +945,7 @@ function createGetPageDataTool(manager: WeappAutomatorManager): AnyTool {
             args.maxBytes,
             {
               identity: {
+                route,
                 path: args.path ?? null,
                 paths: args.paths ?? null,
                 // 截断时也保留诊断价值高、体积小的 missingPaths。

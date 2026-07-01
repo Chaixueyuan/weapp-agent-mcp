@@ -6,12 +6,12 @@
     "url": "https://github.com/Chaixueyuan/weapp-agent-mcp",
     "source": "github"
   },
-  "version": "0.4.7",
+  "version": "0.4.8",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@chaixueyuan/weapp-agent-mcp",
-      "version": "0.4.7",
+      "version": "0.4.8",
       "transport": {
         "type": "stdio"
       },
